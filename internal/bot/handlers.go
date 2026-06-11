@@ -27,11 +27,11 @@ func (a *App) sendStartCheck(ctx context.Context, b *tgbot.Bot, chatID int64) {
 	missing := lists.MissingFiles(a.cfg.DomainList, a.cfg.IPList)
 	if len(missing) > 0 {
 		a.logf(chatID, "start_check missing_files=%s", strings.Join(missing, ","))
-		text := "Отсутствуют файлы:\n" + strings.Join(missing, "\n")
+		text := "📂 Отсутствуют файлы:\n" + strings.Join(missing, "\n")
 		kb := &models.InlineKeyboardMarkup{
 			InlineKeyboard: [][]models.InlineKeyboardButton{
-				{{Text: "Создать файлы", CallbackData: cbPrefix + a.sess.Create(chatID, ActionStartCreate, 0, "", nil)}},
-				{{Text: "Проверить снова", CallbackData: cbPrefix + a.sess.Create(chatID, ActionStartRetry, 0, "", nil)}},
+				{{Text: "📝 Создать файлы", CallbackData: cbPrefix + a.sess.Create(chatID, ActionStartCreate, 0, "", nil, nil)}},
+				{{Text: "🔄 Проверить снова", CallbackData: cbPrefix + a.sess.Create(chatID, ActionStartRetry, 0, "", nil, nil)}},
 			},
 		}
 		_, _ = b.SendMessage(ctx, &tgbot.SendMessageParams{
@@ -53,10 +53,12 @@ func (a *App) sendStartCheck(ctx context.Context, b *tgbot.Bot, chatID int64) {
 }
 
 func (a *App) welcomeText() string {
-	text := "Бот готов к работе.\n\n" +
+	text := "✅ Бот готов к работе.\n\n" +
 		"Отправьте список доменов или IP/CIDR через запятую или с новой строки.\n" +
+		"Строки с // — отключённые записи.\n" +
 		"Бот определит тип и предложит действия.\n\n" +
-		fmt.Sprintf("Домены: %s\nIP: %s", a.cfg.DomainList, a.cfg.IPList)
+		fmt.Sprintf("📄 Домены: %s\n📄 IP: %s", a.cfg.DomainList, a.cfg.IPList) +
+		"\n\n⌨️ /menu — показать кнопки, /hide — скрыть"
 
 	if banner := a.svc.StaleBanner(); banner != "" {
 		text = banner + "\n\n" + text
@@ -68,7 +70,29 @@ func (a *App) welcomeText() string {
 }
 
 func (a *App) menuBtnRestart() string {
-	return "Перезапустить " + a.cfg.ServiceLabel
+	return "🔄 Перезапустить " + a.cfg.ServiceLabel
+}
+
+func (a *App) handleShowMenu(ctx context.Context, b *tgbot.Bot, update *models.Update) {
+	chatID := update.Message.Chat.ID
+	a.logf(chatID, "command=/menu")
+	_, _ = b.SendMessage(ctx, &tgbot.SendMessageParams{
+		ChatID:      chatID,
+		Text:        "⌨️ Меню",
+		ReplyMarkup: a.mainMenuKeyboard(),
+	})
+}
+
+func (a *App) handleHideKeyboard(ctx context.Context, b *tgbot.Bot, update *models.Update) {
+	chatID := update.Message.Chat.ID
+	a.logf(chatID, "command=/hide")
+	_, _ = b.SendMessage(ctx, &tgbot.SendMessageParams{
+		ChatID: chatID,
+		Text:   "⌨️ Клавиатура скрыта. /menu — показать снова.",
+		ReplyMarkup: &models.ReplyKeyboardRemove{
+			RemoveKeyboard: true,
+		},
+	})
 }
 
 func (a *App) restartHiddenReason() string {
@@ -107,8 +131,7 @@ func (a *App) mainMenuKeyboard() *models.ReplyKeyboardMarkup {
 	return &models.ReplyKeyboardMarkup{
 		Keyboard:              rows,
 		ResizeKeyboard:        true,
-		IsPersistent:          true,
-		InputFieldPlaceholder: "Введите домены/IP через запятую или с новой строки",
+		InputFieldPlaceholder: "домены/IP, // — отключить",
 	}
 }
 
@@ -225,7 +248,7 @@ func (a *App) sendPodkopIntegrationCheck(ctx context.Context, b *tgbot.Bot, chat
 	if !ok {
 		_, _ = b.SendMessage(ctx, &tgbot.SendMessageParams{
 			ChatID: chatID,
-			Text:   "Проверка интеграции доступна только для podkop.",
+			Text:   "ℹ️ Проверка интеграции доступна только для podkop.",
 		})
 		return
 	}
@@ -246,36 +269,66 @@ func (a *App) handleListInput(ctx context.Context, b *tgbot.Bot, update *models.
 	}
 	if len(parsed.Invalid) > 0 {
 		a.logf(chatID, "list_input invalid_count=%d", len(parsed.Invalid))
-		msg := "Невалидные записи:\n" + lists.FormatList(parsed.Invalid)
+		msg := "❌ Невалидные записи:\n" + lists.FormatList(parsed.Invalid)
 		_, _ = b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: msg})
 		return
 	}
 	if parsed.Mixed {
-		a.logf(chatID, "list_input mixed_types valid_count=%d", len(parsed.Valid))
+		a.logf(chatID, "list_input mixed_types active=%d disable=%d", len(parsed.Valid), len(parsed.ToDisable))
 		_, _ = b.SendMessage(ctx, &tgbot.SendMessageParams{
 			ChatID: chatID,
-			Text:   "Отправьте только домены или только IP/CIDR в одном сообщении.",
+			Text:   "⚠️ Отправьте только домены или только IP/CIDR в одном сообщении.",
 		})
 		return
 	}
 
 	path := listPath(a.cfg, parsed.Type)
 	label := typeLabel(parsed.Type)
-	items := lists.FormatList(parsed.Valid)
-	a.logf(chatID, "list_input accepted type=%s count=%d path=%q", label, len(parsed.Valid), path)
+	a.logf(chatID, "list_input accepted type=%s active=%d disable=%d path=%q",
+		label, len(parsed.Valid), len(parsed.ToDisable), path)
 
-	msg := fmt.Sprintf("Получено (%s):\n%s", label, items)
-	opID := a.sess.Create(chatID, ActionAdd, parsed.Type, path, parsed.Valid)
+	var msg string
+	var rows [][]models.InlineKeyboardButton
+	opID := a.sess.Create(chatID, ActionAdd, parsed.Type, path, parsed.Valid, parsed.ToDisable)
 
-	rows := [][]models.InlineKeyboardButton{
-		{
-			{Text: "Добавить", CallbackData: cbPrefix + opID + ":add"},
-			{Text: "Удалить", CallbackData: cbPrefix + opID + ":del"},
-		},
-		{
-			{Text: "Отключить", CallbackData: cbPrefix + opID + ":dis"},
-			{Text: "Отмена", CallbackData: cbPrefix + opID + ":cancel"},
-		},
+	switch {
+	case len(parsed.Valid) == 0 && len(parsed.ToDisable) > 0:
+		msg = fmt.Sprintf("⏸ К отключению (%s):\n%s", label, lists.FormatDisabledList(parsed.ToDisable))
+		rows = [][]models.InlineKeyboardButton{
+			{
+				{Text: "⏸ Отключить", CallbackData: cbPrefix + opID + ":dis"},
+				{Text: "🗑 Удалить", CallbackData: cbPrefix + opID + ":del"},
+			},
+			{{Text: "❌ Отмена", CallbackData: cbPrefix + opID + ":cancel"}},
+		}
+	case len(parsed.ToDisable) > 0:
+		msg = fmt.Sprintf("📥 Получено (%s):\n\n➕ Добавить (%d):\n%s\n\n⏸ Отключить (%d):\n%s",
+			label,
+			len(parsed.Valid), lists.FormatList(parsed.Valid),
+			len(parsed.ToDisable), lists.FormatDisabledList(parsed.ToDisable))
+		rows = [][]models.InlineKeyboardButton{
+			{{Text: "✅ Применить всё", CallbackData: cbPrefix + opID + ":apply"}},
+			{
+				{Text: "➕ Добавить", CallbackData: cbPrefix + opID + ":add"},
+				{Text: "⏸ Отключить", CallbackData: cbPrefix + opID + ":dis"},
+			},
+			{
+				{Text: "🗑 Удалить", CallbackData: cbPrefix + opID + ":del"},
+				{Text: "❌ Отмена", CallbackData: cbPrefix + opID + ":cancel"},
+			},
+		}
+	default:
+		msg = fmt.Sprintf("📥 Получено (%s):\n%s", label, lists.FormatList(parsed.Valid))
+		rows = [][]models.InlineKeyboardButton{
+			{
+				{Text: "➕ Добавить", CallbackData: cbPrefix + opID + ":add"},
+				{Text: "🗑 Удалить", CallbackData: cbPrefix + opID + ":del"},
+			},
+			{
+				{Text: "⏸ Отключить", CallbackData: cbPrefix + opID + ":dis"},
+				{Text: "❌ Отмена", CallbackData: cbPrefix + opID + ":cancel"},
+			},
+		}
 	}
 	kb := &models.InlineKeyboardMarkup{InlineKeyboard: rows}
 
@@ -314,7 +367,7 @@ func (a *App) handleCallback(ctx context.Context, b *tgbot.Bot, update *models.U
 		a.logf(chatID, "callback stale op_id=%s action=%s", opID, action)
 		_, _ = b.AnswerCallbackQuery(ctx, &tgbot.AnswerCallbackQueryParams{
 			CallbackQueryID: update.CallbackQuery.ID,
-			Text:            "Операция устарела. Отправьте список снова.",
+			Text:            "⏳ Операция устарела. Отправьте список снова.",
 		})
 		return
 	}
@@ -322,19 +375,25 @@ func (a *App) handleCallback(ctx context.Context, b *tgbot.Bot, update *models.U
 
 	if action == "cancel" {
 		a.sess.Delete(opID)
-		a.answerAndEdit(ctx, b, update, "Операция отменена.")
+		a.answerAndEdit(ctx, b, update, "❌ Операция отменена.")
 		return
 	}
 
 	switch op.Kind {
 	case ActionAdd:
 		switch action {
+		case "apply":
+			a.handleApplyMixed(ctx, b, update, op)
 		case "add":
 			a.handleAdd(ctx, b, update, op)
 		case "del":
-			a.handleDelete(ctx, b, update, op)
+			vals := op.Values
+			if len(vals) == 0 {
+				vals = op.DisableValues
+			}
+			a.handleDelete(ctx, b, update, opForValues(op, vals))
 		case "dis":
-			a.handleDisablePrompt(ctx, b, update, op)
+			a.handleDisablePrompt(ctx, b, update, opForDisable(op))
 		}
 	case ActionAddAll:
 		if action == "confirm" {
@@ -365,6 +424,50 @@ func (a *App) handleCallback(ctx context.Context, b *tgbot.Bot, update *models.U
 	}
 }
 
+func opForValues(op *PendingOp, values []string) *PendingOp {
+	if len(values) == 0 {
+		return op
+	}
+	copy := *op
+	copy.Values = append([]string(nil), values...)
+	copy.DisableValues = nil
+	return &copy
+}
+
+func opForDisable(op *PendingOp) *PendingOp {
+	if len(op.DisableValues) == 0 {
+		return op
+	}
+	return opForValues(op, op.DisableValues)
+}
+
+func (a *App) handleApplyMixed(ctx context.Context, b *tgbot.Bot, update *models.Update, op *PendingOp) {
+	var parts []string
+	if len(op.Values) > 0 {
+		if err := lists.AddNew(op.ListPath, op.Values); err != nil {
+			a.logf(op.ChatID, "apply_mixed add_error path=%q err=%v", op.ListPath, err)
+			a.answerAndEdit(ctx, b, update, "❌ Ошибка добавления: "+err.Error())
+			return
+		}
+		parts = append(parts, fmt.Sprintf("➕ Добавлено (%d):\n%s", len(op.Values), lists.FormatList(op.Values)))
+	}
+	if len(op.DisableValues) > 0 {
+		if err := lists.Disable(op.ListPath, op.DisableValues); err != nil {
+			a.logf(op.ChatID, "apply_mixed disable_error path=%q err=%v", op.ListPath, err)
+			a.answerAndEdit(ctx, b, update, "❌ Ошибка отключения: "+err.Error())
+			return
+		}
+		parts = append(parts, fmt.Sprintf("⏸ Отключено (%d):\n%s", len(op.DisableValues), lists.FormatDisabledList(op.DisableValues)))
+	}
+	a.logf(op.ChatID, "apply_mixed success add=%d disable=%d path=%q", len(op.Values), len(op.DisableValues), op.ListPath)
+	a.sess.Delete(op.ID)
+	_ = a.svc.MarkFilesChanged()
+	a.answerAndEdit(ctx, b, update, strings.Join(parts, "\n\n"))
+	if a.cfg.AutoRestart && a.cfg.RestartCmd != "" {
+		go a.runRestartNotify(context.Background(), b, op.ChatID)
+	}
+}
+
 func (a *App) handleAdd(ctx context.Context, b *tgbot.Bot, update *models.Update, op *PendingOp) {
 	classified, err := lists.ClassifyValues(op.ListPath, op.Values)
 	if err != nil {
@@ -384,15 +487,15 @@ func (a *App) handleAdd(ctx context.Context, b *tgbot.Bot, update *models.Update
 			lists.FormatList(newVals),
 			lists.FormatList(active),
 		)
-		allID := a.sess.Create(op.ChatID, ActionAddAll, op.ListType, op.ListPath, op.Values)
-		newID := a.sess.Create(op.ChatID, ActionAddNew, op.ListType, op.ListPath, op.Values)
+		allID := a.sess.Create(op.ChatID, ActionAddAll, op.ListType, op.ListPath, op.Values, nil)
+		newID := a.sess.Create(op.ChatID, ActionAddNew, op.ListType, op.ListPath, op.Values, nil)
 		a.sess.Delete(op.ID)
 
 		kb := &models.InlineKeyboardMarkup{
 			InlineKeyboard: [][]models.InlineKeyboardButton{
-				{{Text: "Добавить всё", CallbackData: cbPrefix + allID + ":confirm"}},
-				{{Text: "Только новые", CallbackData: cbPrefix + newID + ":confirm"}},
-				{{Text: "Отмена", CallbackData: cbPrefix + allID + ":cancel"}},
+				{{Text: "➕ Добавить всё", CallbackData: cbPrefix + allID + ":confirm"}},
+				{{Text: "✨ Только новые", CallbackData: cbPrefix + newID + ":confirm"}},
+				{{Text: "❌ Отмена", CallbackData: cbPrefix + allID + ":cancel"}},
 			},
 		}
 		a.answerAndEditMarkup(ctx, b, update, msg, kb)
@@ -402,7 +505,7 @@ func (a *App) handleAdd(ctx context.Context, b *tgbot.Bot, update *models.Update
 	if len(newVals) == 0 {
 		a.logf(op.ChatID, "add skipped_all_exist count=%d", len(op.Values))
 		a.sess.Delete(op.ID)
-		a.answerAndEdit(ctx, b, update, "Все записи уже есть в списке.")
+		a.answerAndEdit(ctx, b, update, "ℹ️ Все записи уже есть в списке.")
 		return
 	}
 
@@ -413,7 +516,7 @@ func (a *App) handleAdd(ctx context.Context, b *tgbot.Bot, update *models.Update
 	}
 	a.logf(op.ChatID, "add success new_count=%d path=%q", len(newVals), op.ListPath)
 	a.sess.Delete(op.ID)
-	a.afterAddSuccess(ctx, b, update, op.ChatID, fmt.Sprintf("Добавлено (%d):\n%s", len(newVals), lists.FormatList(newVals)))
+	a.afterAddSuccess(ctx, b, update, op.ChatID, fmt.Sprintf("➕ Добавлено (%d):\n%s", len(newVals), lists.FormatList(newVals)))
 }
 
 func (a *App) execAddAll(ctx context.Context, b *tgbot.Bot, update *models.Update, op *PendingOp) {
@@ -424,7 +527,7 @@ func (a *App) execAddAll(ctx context.Context, b *tgbot.Bot, update *models.Updat
 	}
 	a.logf(op.ChatID, "add_all success count=%d path=%q", len(op.Values), op.ListPath)
 	a.sess.Delete(op.ID)
-	a.afterAddSuccess(ctx, b, update, op.ChatID, "Записи добавлены/включены.")
+	a.afterAddSuccess(ctx, b, update, op.ChatID, "➕ Записи добавлены/включены.")
 }
 
 func (a *App) execAddNew(ctx context.Context, b *tgbot.Bot, update *models.Update, op *PendingOp) {
@@ -435,7 +538,7 @@ func (a *App) execAddNew(ctx context.Context, b *tgbot.Bot, update *models.Updat
 	}
 	a.logf(op.ChatID, "add_new success count=%d path=%q", len(op.Values), op.ListPath)
 	a.sess.Delete(op.ID)
-	a.afterAddSuccess(ctx, b, update, op.ChatID, "Новые записи добавлены.")
+	a.afterAddSuccess(ctx, b, update, op.ChatID, "✨ Новые записи добавлены.")
 }
 
 func (a *App) handleDelete(ctx context.Context, b *tgbot.Bot, update *models.Update, op *PendingOp) {
@@ -447,7 +550,7 @@ func (a *App) handleDelete(ctx context.Context, b *tgbot.Bot, update *models.Upd
 	a.logf(op.ChatID, "delete success count=%d path=%q", len(op.Values), op.ListPath)
 	a.sess.Delete(op.ID)
 	_ = a.svc.MarkFilesChanged()
-	a.answerAndEdit(ctx, b, update, fmt.Sprintf("Удалено:\n%s", lists.FormatList(op.Values)))
+	a.answerAndEdit(ctx, b, update, fmt.Sprintf("🗑 Удалено:\n%s", lists.FormatList(op.Values)))
 }
 
 func (a *App) handleDisablePrompt(ctx context.Context, b *tgbot.Bot, update *models.Update, op *PendingOp) {
@@ -472,11 +575,11 @@ func (a *App) handleDisablePrompt(ctx context.Context, b *tgbot.Bot, update *mod
 
 	if len(newVals) > 0 {
 		a.logf(op.ChatID, "disable requires_add_missing missing=%d active=%d disabled=%d", len(newVals), len(active), len(disabled))
-		confirmID := a.sess.Create(op.ChatID, ActionDisableAddMissing, op.ListType, op.ListPath, op.Values)
+		confirmID := a.sess.Create(op.ChatID, ActionDisableAddMissing, op.ListType, op.ListPath, op.Values, nil)
 		kb := &models.InlineKeyboardMarkup{
 			InlineKeyboard: [][]models.InlineKeyboardButton{
-				{{Text: "Добавить отключёнными", CallbackData: cbPrefix + confirmID + ":confirm"}},
-				{{Text: "Отмена", CallbackData: cbPrefix + confirmID + ":cancel"}},
+				{{Text: "⏸ Добавить отключёнными", CallbackData: cbPrefix + confirmID + ":confirm"}},
+				{{Text: "❌ Отмена", CallbackData: cbPrefix + confirmID + ":cancel"}},
 			},
 		}
 		a.answerAndEditMarkup(ctx, b, update, msg, kb)
@@ -485,16 +588,16 @@ func (a *App) handleDisablePrompt(ctx context.Context, b *tgbot.Bot, update *mod
 
 	if len(active) == 0 {
 		a.logf(op.ChatID, "disable skipped_already_disabled count=%d", len(op.Values))
-		a.answerAndEdit(ctx, b, update, "Все записи уже отключены.")
+		a.answerAndEdit(ctx, b, update, "ℹ️ Все записи уже отключены.")
 		return
 	}
 	a.logf(op.ChatID, "disable confirm_only active=%d", len(active))
 
-	confirmID := a.sess.Create(op.ChatID, ActionDisableConfirm, op.ListType, op.ListPath, op.Values)
+	confirmID := a.sess.Create(op.ChatID, ActionDisableConfirm, op.ListType, op.ListPath, op.Values, nil)
 	kb := &models.InlineKeyboardMarkup{
 		InlineKeyboard: [][]models.InlineKeyboardButton{
-			{{Text: "Подтвердить", CallbackData: cbPrefix + confirmID + ":confirm"}},
-			{{Text: "Отмена", CallbackData: cbPrefix + confirmID + ":cancel"}},
+			{{Text: "✅ Подтвердить", CallbackData: cbPrefix + confirmID + ":confirm"}},
+			{{Text: "❌ Отмена", CallbackData: cbPrefix + confirmID + ":cancel"}},
 		},
 	}
 	a.answerAndEditMarkup(ctx, b, update, msg, kb)
@@ -509,7 +612,7 @@ func (a *App) execDisable(ctx context.Context, b *tgbot.Bot, update *models.Upda
 	a.logf(op.ChatID, "disable_existing success count=%d path=%q", len(op.Values), op.ListPath)
 	a.sess.Delete(op.ID)
 	_ = a.svc.MarkFilesChanged()
-	a.answerAndEdit(ctx, b, update, "Записи отключены.")
+	a.answerAndEdit(ctx, b, update, "⏸ Записи отключены.")
 }
 
 func (a *App) execDisableWithMissing(ctx context.Context, b *tgbot.Bot, update *models.Update, op *PendingOp) {
@@ -521,7 +624,7 @@ func (a *App) execDisableWithMissing(ctx context.Context, b *tgbot.Bot, update *
 	a.logf(op.ChatID, "disable_with_missing success count=%d path=%q", len(op.Values), op.ListPath)
 	a.sess.Delete(op.ID)
 	_ = a.svc.MarkFilesChanged()
-	a.answerAndEdit(ctx, b, update, "Записи отключены (включая добавленные).")
+	a.answerAndEdit(ctx, b, update, "⏸ Записи отключены (включая добавленные).")
 }
 
 func (a *App) handleStartCreate(ctx context.Context, b *tgbot.Bot, update *models.Update, chatID int64) {
@@ -655,7 +758,7 @@ func (a *App) podkopIntegrationText(ctx context.Context) (string, bool) {
 	if st.IPBound {
 		ipLine = "✅ подключен"
 	}
-	text := "Проверка интеграции Podkop:\n" +
+	text := "🔗 Проверка интеграции Podkop:\n" +
 		"• local_domain_lists: " + domainLine + "\n" +
 		"• local_subnet_lists: " + ipLine
 

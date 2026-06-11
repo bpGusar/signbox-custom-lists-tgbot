@@ -56,40 +56,77 @@ func IsIPOrCIDR(s string) bool {
 	return ip.To4() != nil
 }
 
-func SplitInput(text string) []string {
-	text = strings.ReplaceAll(text, "\n", ",")
-	text = strings.ReplaceAll(text, "\r", "")
-	parts := strings.FieldsFunc(text, func(r rune) bool {
-		return r == ',' || r == ' ' || r == '\t'
-	})
+type inputToken struct {
+	value    string
+	disabled bool
+}
 
-	seen := make(map[string]struct{})
-	var out []string
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p == "" {
+func splitInputTokens(text string) []inputToken {
+	text = strings.ReplaceAll(text, "\r", "")
+	lines := strings.Split(text, "\n")
+	if len(lines) == 1 {
+		lines = []string{text}
+	}
+
+	seen := make(map[string]int)
+	var out []inputToken
+
+	add := func(value string, disabled bool) {
+		key := strings.ToLower(value)
+		if i, ok := seen[key]; ok {
+			if disabled {
+				out[i].disabled = true
+			}
+			return
+		}
+		seen[key] = len(out)
+		out = append(out, inputToken{value: value, disabled: disabled})
+	}
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
 			continue
 		}
-		key := strings.ToLower(p)
-		if _, ok := seen[key]; ok {
-			continue
+		for _, part := range strings.Split(line, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			disabled := false
+			if strings.HasPrefix(part, "//") {
+				disabled = true
+				part = strings.TrimSpace(strings.TrimPrefix(part, "//"))
+				if part == "" {
+					continue
+				}
+			}
+			add(part, disabled)
 		}
-		seen[key] = struct{}{}
-		out = append(out, p)
+	}
+	return out
+}
+
+func SplitInput(text string) []string {
+	tokens := splitInputTokens(text)
+	out := make([]string, 0, len(tokens))
+	for _, t := range tokens {
+		out = append(out, t.value)
 	}
 	return out
 }
 
 type ParseResult struct {
-	Type     EntryType
-	Valid    []string
-	Invalid  []string
-	Mixed    bool
-	Empty    bool
+	Type      EntryType
+	Valid     []string
+	ToDisable []string
+	Invalid   []string
+	Mixed     bool
+	Empty     bool
 }
 
 func ParseInput(text string) ParseResult {
-	tokens := SplitInput(text)
+	tokens := splitInputTokens(text)
 	if len(tokens) == 0 {
 		return ParseResult{Empty: true}
 	}
@@ -97,10 +134,10 @@ func ParseInput(text string) ParseResult {
 	var result ParseResult
 	var firstType EntryType
 
-	for _, t := range tokens {
-		et := ClassifyToken(t)
+	for _, tok := range tokens {
+		et := ClassifyToken(tok.value)
 		if et == TypeUnknown {
-			result.Invalid = append(result.Invalid, t)
+			result.Invalid = append(result.Invalid, tok.value)
 			continue
 		}
 		if firstType == TypeUnknown {
@@ -109,11 +146,19 @@ func ParseInput(text string) ParseResult {
 		} else if et != firstType {
 			result.Mixed = true
 		}
-		result.Valid = append(result.Valid, t)
+		if tok.disabled {
+			result.ToDisable = append(result.ToDisable, tok.value)
+		} else {
+			result.Valid = append(result.Valid, tok.value)
+		}
 	}
 
 	if result.Mixed {
 		result.Valid = nil
+		result.ToDisable = nil
+	}
+	if len(result.Valid) == 0 && len(result.ToDisable) == 0 && len(result.Invalid) == 0 {
+		result.Empty = true
 	}
 	return result
 }

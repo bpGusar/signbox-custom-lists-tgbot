@@ -24,13 +24,14 @@ const (
 )
 
 type PendingOp struct {
-	ID       string
-	ChatID   int64
-	Kind     ActionKind
-	ListType lists.EntryType
-	ListPath string
-	Values   []string
-	Created  time.Time
+	ID             string
+	ChatID         int64
+	Kind           ActionKind
+	ListType       lists.EntryType
+	ListPath       string
+	Values         []string
+	DisableValues  []string
+	Created        time.Time
 }
 
 type SessionStore struct {
@@ -48,19 +49,20 @@ func NewSessionStore() *SessionStore {
 	return s
 }
 
-func (s *SessionStore) Create(chatID int64, kind ActionKind, listType lists.EntryType, listPath string, values []string) string {
+func (s *SessionStore) Create(chatID int64, kind ActionKind, listType lists.EntryType, listPath string, values, disableValues []string) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	id := randomID()
 	s.ops[id] = &PendingOp{
-		ID:       id,
-		ChatID:   chatID,
-		Kind:     kind,
-		ListType: listType,
-		ListPath: listPath,
-		Values:   append([]string(nil), values...),
-		Created:  time.Now(),
+		ID:            id,
+		ChatID:        chatID,
+		Kind:          kind,
+		ListType:      listType,
+		ListPath:      listPath,
+		Values:        append([]string(nil), values...),
+		DisableValues: append([]string(nil), disableValues...),
+		Created:       time.Now(),
 	}
 	return id
 }

@@ -349,3 +349,14 @@ func FormatList(items []string) string {
 	}
 	return strings.Join(items, "\n")
 }
+
+func FormatDisabledList(items []string) string {
+	if len(items) == 0 {
+		return "—"
+	}
+	lines := make([]string, len(items))
+	for i, v := range items {
+		lines[i] = "// " + v
+	}
+	return strings.Join(lines, "\n")
+}

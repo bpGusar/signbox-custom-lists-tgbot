@@ -26,6 +26,44 @@ func TestParseInputMixed(t *testing.T) {
 	}
 }
 
+func TestParseInputDisabledLines(t *testing.T) {
+	r := ParseInput("active.com\n// disabled.com")
+	if r.Mixed || len(r.Invalid) > 0 || r.Type != TypeDomain {
+		t.Fatalf("unexpected: %+v", r)
+	}
+	if len(r.Valid) != 1 || r.Valid[0] != "active.com" {
+		t.Fatalf("valid: %+v", r.Valid)
+	}
+	if len(r.ToDisable) != 1 || r.ToDisable[0] != "disabled.com" {
+		t.Fatalf("to disable: %+v", r.ToDisable)
+	}
+}
+
+func TestParseInputPastedList(t *testing.T) {
+	input := `4pda.to
+codebeautify.org
+cursor-cdn.com
+// kick.com
+xdaforums.com`
+	r := ParseInput(input)
+	if r.Mixed || len(r.Invalid) > 0 || r.Type != TypeDomain {
+		t.Fatalf("unexpected: %+v", r)
+	}
+	if len(r.Valid) != 4 {
+		t.Fatalf("want 4 active, got %d: %v", len(r.Valid), r.Valid)
+	}
+	if len(r.ToDisable) != 1 || r.ToDisable[0] != "kick.com" {
+		t.Fatalf("to disable: %+v", r.ToDisable)
+	}
+}
+
+func TestParseInputInlineComment(t *testing.T) {
+	r := ParseInput("a.com, // b.com")
+	if len(r.Valid) != 1 || len(r.ToDisable) != 1 {
+		t.Fatalf("unexpected: %+v", r)
+	}
+}
+
 func TestAddDisableDelete(t *testing.T) {
 	dir := t.TempDir()
 	path := dir + "/list.lst"
