@@ -1,0 +1,14 @@
+{
+  "version": "1.0.0-r1",
+  "openwrt_version": "24.10",
+  "packages": {
+    "lists-tg": "lists-tg_1.0.0-r1_${ARCH}.ipk",
+    "luci-app-lists-tg": "luci-app-lists-tg_1.0.0-r1_all.ipk"
+  },
+  "architectures": [
+    "aarch64_cortex-a53",
+    "arm_cortex-a7_neon-vfpv4",
+    "mipsel_24kc",
+    "x86_64"
+  ]
+}

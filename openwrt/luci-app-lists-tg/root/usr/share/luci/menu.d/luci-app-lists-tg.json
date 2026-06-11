@@ -1,0 +1,14 @@
+{
+  "admin/services/lists-tg": {
+    "title": "Lists Telegram Bot",
+    "order": 90,
+    "action": {
+      "type": "view",
+      "path": "lists-tg/lists-tg"
+    },
+    "depends": {
+      "acl": ["luci-app-lists-tg"],
+      "uci": { "lists-tg": true }
+    }
+  }
+}

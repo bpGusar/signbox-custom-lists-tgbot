@@ -1,0 +1,14 @@
+{
+  "luci-app-lists-tg": {
+    "description": "Grant access to Lists Telegram Bot configuration",
+    "read": {
+      "file": {
+        "/etc/init.d/lists-tg": ["exec"]
+      },
+      "uci": ["lists-tg"]
+    },
+    "write": {
+      "uci": ["lists-tg"]
+    }
+  }
+}
