@@ -141,19 +141,7 @@ jobs:
 
       - name: Update manifest
         run: |
-          VERSION="${{ needs.version.outputs.version }}"
-          python3 - "$VERSION" dist/manifest.json <<'PY'
-import json, sys
-version, path = sys.argv[1], sys.argv[2]
-with open(path) as f:
-    data = json.load(f)
-data["version"] = f"{version}-r1"
-data["packages"]["lists-tg"] = f"lists-tg_{version}-r1_${{ARCH}}.ipk"
-data["packages"]["luci-app-lists-tg"] = f"luci-app-lists-tg_{version}-r1_all.ipk"
-with open(path, "w") as f:
-    json.dump(data, f, indent=2)
-    f.write("\n")
-PY
+          python3 scripts/update-manifest.py "${{ needs.version.outputs.version }}" 1 dist/manifest.json
 
       - name: Commit dist/ipk
         run: |
