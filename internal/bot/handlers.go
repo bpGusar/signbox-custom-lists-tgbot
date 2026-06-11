@@ -438,11 +438,7 @@ func (a *App) handleApplyMixed(ctx context.Context, b *tgbot.Bot, update *models
 	}
 	a.logf(op.ChatID, "apply_mixed success add=%d disable=%d path=%q", len(op.Values), len(op.DisableValues), op.ListPath)
 	a.sess.Delete(op.ID)
-	_ = a.svc.MarkFilesChanged()
-	a.answerAndEdit(ctx, b, update, strings.Join(parts, "\n\n"))
-	if a.cfg.AutoRestart && a.cfg.RestartCmd != "" {
-		go a.runRestartNotify(context.Background(), b, op.ChatID)
-	}
+	a.afterFilesChanged(ctx, b, update, op.ChatID, strings.Join(parts, "\n\n"))
 }
 
 func (a *App) handleAdd(ctx context.Context, b *tgbot.Bot, update *models.Update, op *PendingOp) {
@@ -526,8 +522,7 @@ func (a *App) handleDelete(ctx context.Context, b *tgbot.Bot, update *models.Upd
 	}
 	a.logf(op.ChatID, "delete success count=%d path=%q", len(op.Values), op.ListPath)
 	a.sess.Delete(op.ID)
-	_ = a.svc.MarkFilesChanged()
-	a.answerAndEdit(ctx, b, update, fmt.Sprintf("🗑 Удалено:\n%s", lists.FormatList(op.Values)))
+	a.afterFilesChanged(ctx, b, update, op.ChatID, fmt.Sprintf("🗑 Удалено:\n%s", lists.FormatList(op.Values)))
 }
 
 func (a *App) handleDisablePrompt(ctx context.Context, b *tgbot.Bot, update *models.Update, op *PendingOp) {
@@ -588,8 +583,7 @@ func (a *App) execDisable(ctx context.Context, b *tgbot.Bot, update *models.Upda
 	}
 	a.logf(op.ChatID, "disable_existing success count=%d path=%q", len(op.Values), op.ListPath)
 	a.sess.Delete(op.ID)
-	_ = a.svc.MarkFilesChanged()
-	a.answerAndEdit(ctx, b, update, "⏸ Записи отключены.")
+	a.afterFilesChanged(ctx, b, update, op.ChatID, "⏸ Записи отключены.")
 }
 
 func (a *App) execDisableWithMissing(ctx context.Context, b *tgbot.Bot, update *models.Update, op *PendingOp) {
@@ -600,8 +594,7 @@ func (a *App) execDisableWithMissing(ctx context.Context, b *tgbot.Bot, update *
 	}
 	a.logf(op.ChatID, "disable_with_missing success count=%d path=%q", len(op.Values), op.ListPath)
 	a.sess.Delete(op.ID)
-	_ = a.svc.MarkFilesChanged()
-	a.answerAndEdit(ctx, b, update, "⏸ Записи отключены (включая добавленные).")
+	a.afterFilesChanged(ctx, b, update, op.ChatID, "⏸ Записи отключены (включая добавленные).")
 }
 
 func (a *App) handleStartCreate(ctx context.Context, b *tgbot.Bot, update *models.Update, chatID int64) {
@@ -616,8 +609,16 @@ func (a *App) handleStartCreate(ctx context.Context, b *tgbot.Bot, update *model
 }
 
 func (a *App) afterAddSuccess(ctx context.Context, b *tgbot.Bot, update *models.Update, chatID int64, msg string) {
+	a.afterFilesChanged(ctx, b, update, chatID, msg)
+}
+
+func (a *App) afterFilesChanged(ctx context.Context, b *tgbot.Bot, update *models.Update, chatID int64, msg string) {
 	_ = a.svc.MarkFilesChanged()
 	a.answerAndEdit(ctx, b, update, msg)
+	a.maybeAutoRestart(chatID, b)
+}
+
+func (a *App) maybeAutoRestart(chatID int64, b *tgbot.Bot) {
 	if a.cfg.AutoRestart && a.cfg.RestartCmd != "" {
 		go a.runRestartNotify(context.Background(), b, chatID)
 	}
