@@ -13,6 +13,7 @@ import (
 
 	"lst-signbox-lists-tgbot/internal/lists"
 	"lst-signbox-lists-tgbot/internal/service"
+	"lst-signbox-lists-tgbot/internal/version"
 )
 
 const cbPrefix = "s:"
@@ -44,7 +45,7 @@ func (a *App) sendStartCheck(ctx context.Context, b *tgbot.Bot, chatID int64) {
 
 	a.ready[chatID] = true
 	a.logf(chatID, "start_check ready=true")
-	text := a.welcomeText()
+	text := a.welcomeText(ctx)
 	_, _ = b.SendMessage(ctx, &tgbot.SendMessageParams{
 		ChatID:      chatID,
 		Text:        text,
@@ -52,8 +53,9 @@ func (a *App) sendStartCheck(ctx context.Context, b *tgbot.Bot, chatID int64) {
 	})
 }
 
-func (a *App) welcomeText() string {
-	text := "✅ Бот готов к работе.\n\n" +
+func (a *App) welcomeText(ctx context.Context) string {
+	text := a.versionHeader(ctx) + "\n\n" +
+		"✅ Бот готов к работе.\n\n" +
 		"Отправьте список доменов или IP/CIDR через запятую или с новой строки.\n\n" +
 		"Примеры:\n" +
 		"• example.com, github.com\n" +
@@ -71,6 +73,30 @@ func (a *App) welcomeText() string {
 		}
 	}
 	return text
+}
+
+func (a *App) versionHeader(ctx context.Context) string {
+	lines := []string{fmt.Sprintf("📦 Версия: %s", version.Display())}
+
+	if version.IsDev() {
+		lines = append(lines, "ℹ️ Сборка для разработки")
+		return strings.Join(lines, "\n")
+	}
+
+	rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	switch a.verChecker.Check(rctx) {
+	case version.StatusCurrent:
+		lines = append(lines, "✅ Версия актуальна")
+	case version.StatusOutdated:
+		lines = append(lines, fmt.Sprintf("⚠️ Доступна новая версия: %s", a.verChecker.Latest()))
+	default:
+		if a.verChecker.LastError() != nil {
+			lines = append(lines, "ℹ️ Не удалось проверить обновления")
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (a *App) menuBtnRestart() string {
@@ -605,7 +631,7 @@ func (a *App) handleStartCreate(ctx context.Context, b *tgbot.Bot, update *model
 	}
 	a.ready[chatID] = true
 	a.logf(chatID, "create_files_success domain=%q ip=%q", a.cfg.DomainList, a.cfg.IPList)
-	a.answerAndEdit(ctx, b, update, a.welcomeText())
+	a.answerAndEdit(ctx, b, update, a.welcomeText(ctx))
 }
 
 func (a *App) afterAddSuccess(ctx context.Context, b *tgbot.Bot, update *models.Update, chatID int64, msg string) {
