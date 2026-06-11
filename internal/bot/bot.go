@@ -24,6 +24,7 @@ type App struct {
 }
 
 const (
+	menuBtnMainMenu        = "🏠 Главное меню"
 	menuBtnDownloadIP      = "📥 Скачать IP"
 	menuBtnDownloadDomains = "📥 Скачать домены"
 	menuBtnViewIP          = "📋 Показать IP"
