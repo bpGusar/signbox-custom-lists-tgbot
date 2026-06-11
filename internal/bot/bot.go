@@ -22,12 +22,12 @@ type App struct {
 }
 
 const (
-	menuBtnDownloadIP       = "Скачать файл IP"
-	menuBtnDownloadDomains  = "Скачать файл доменов"
-	menuBtnViewIP           = "Показать файл IP"
-	menuBtnViewDomains      = "Показать файл доменов"
-	menuBtnCheckPodkop      = "Проверить интеграцию Podkop"
-	tgMaxMessageLen         = 4096
+	menuBtnDownloadIP      = "📥 Скачать IP"
+	menuBtnDownloadDomains = "📥 Скачать домены"
+	menuBtnViewIP          = "📋 Показать IP"
+	menuBtnViewDomains     = "📋 Показать домены"
+	menuBtnCheckPodkop     = "🔗 Проверить Podkop"
+	tgMaxMessageLen        = 4096
 )
 
 func Run(ctx context.Context, cfg *config.Config) error {
@@ -61,6 +61,8 @@ func Run(ctx context.Context, cfg *config.Config) error {
 
 	b.RegisterHandler(tgbot.HandlerTypeMessageText, "/start", tgbot.MatchTypeExact, app.handleStart)
 	b.RegisterHandler(tgbot.HandlerTypeMessageText, "/start", tgbot.MatchTypePrefix, app.handleStart)
+	b.RegisterHandler(tgbot.HandlerTypeMessageText, "/menu", tgbot.MatchTypeExact, app.handleShowMenu)
+	b.RegisterHandler(tgbot.HandlerTypeMessageText, "/hide", tgbot.MatchTypeExact, app.handleHideKeyboard)
 	b.RegisterHandler(tgbot.HandlerTypeCallbackQueryData, "s:", tgbot.MatchTypePrefix, app.handleCallback)
 
 	log.Println("lst-signbox-lists-tgbot started")
