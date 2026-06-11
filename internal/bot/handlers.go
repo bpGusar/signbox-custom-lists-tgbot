@@ -3,6 +3,8 @@ package bot
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -17,12 +19,14 @@ const cbPrefix = "s:"
 
 func (a *App) handleStart(ctx context.Context, b *tgbot.Bot, update *models.Update) {
 	chatID := update.Message.Chat.ID
+	a.logf(chatID, "command=/start")
 	a.sendStartCheck(ctx, b, chatID)
 }
 
 func (a *App) sendStartCheck(ctx context.Context, b *tgbot.Bot, chatID int64) {
 	missing := lists.MissingFiles(a.cfg.DomainList, a.cfg.IPList)
 	if len(missing) > 0 {
+		a.logf(chatID, "start_check missing_files=%s", strings.Join(missing, ","))
 		text := "Отсутствуют файлы:\n" + strings.Join(missing, "\n")
 		kb := &models.InlineKeyboardMarkup{
 			InlineKeyboard: [][]models.InlineKeyboardButton{
@@ -39,17 +43,25 @@ func (a *App) sendStartCheck(ctx context.Context, b *tgbot.Bot, chatID int64) {
 	}
 
 	a.ready[chatID] = true
+	a.logf(chatID, "start_check ready=true")
 	text := a.welcomeText()
 	_, _ = b.SendMessage(ctx, &tgbot.SendMessageParams{
 		ChatID:      chatID,
 		Text:        text,
-		ReplyMarkup: a.staleKeyboard(),
+		ReplyMarkup: a.mainMenuKeyboard(),
 	})
+	if kb := a.staleKeyboard(); kb != nil {
+		_, _ = b.SendMessage(ctx, &tgbot.SendMessageParams{
+			ChatID:      chatID,
+			Text:        "Доступен перезапуск сервиса:",
+			ReplyMarkup: kb,
+		})
+	}
 }
 
 func (a *App) welcomeText() string {
 	text := "Бот готов к работе.\n\n" +
-		"Отправьте список доменов или IP/CIDR через запятую.\n" +
+		"Отправьте список доменов или IP/CIDR через запятую или с новой строки.\n" +
 		"Бот определит тип и предложит действия.\n\n" +
 		fmt.Sprintf("Домены: %s\nIP: %s", a.cfg.DomainList, a.cfg.IPList)
 
@@ -85,9 +97,79 @@ func (a *App) restartHiddenReason() string {
 		return ""
 	}
 	if a.cfg.RestartCmd == "" {
-		return "Кнопка перезапуска не показана: не настроен restart_cmd."
+		return "Кнопка перезапуска не показана: не настроен restart_cmd.\n" +
+			"Настройка через UCI:\n" +
+			"uci set lst-signbox-lists-tgbot.main.restart_cmd='/etc/init.d/sing-box restart'\n" +
+			"uci commit lst-signbox-lists-tgbot\n" +
+			"/etc/init.d/lst-signbox-lists-tgbot restart\n" +
+			"Или через ENV: LST_SIGNBOX_LISTS_TGBOT_RESTART_CMD='...'."
 	}
 	return ""
+}
+
+func (a *App) mainMenuKeyboard() *models.ReplyKeyboardMarkup {
+	return &models.ReplyKeyboardMarkup{
+		Keyboard: [][]models.KeyboardButton{
+			{
+				{Text: menuBtnDownloadIP},
+				{Text: menuBtnDownloadDomains},
+			},
+		},
+		ResizeKeyboard:        true,
+		IsPersistent:          true,
+		InputFieldPlaceholder: "Введите домены/IP через запятую или с новой строки",
+	}
+}
+
+func (a *App) handleMenuAction(ctx context.Context, b *tgbot.Bot, chatID int64, text string) bool {
+	switch strings.ToLower(strings.TrimSpace(text)) {
+	case strings.ToLower(menuBtnDownloadIP):
+		a.logf(chatID, "menu download_ip")
+		a.sendListFile(ctx, b, chatID, a.cfg.IPList, "ip_list.lst", "IP-список")
+		return true
+	case strings.ToLower(menuBtnDownloadDomains):
+		a.logf(chatID, "menu download_domains")
+		a.sendListFile(ctx, b, chatID, a.cfg.DomainList, "domain_list.lst", "список доменов")
+		return true
+	default:
+		return false
+	}
+}
+
+func (a *App) sendListFile(ctx context.Context, b *tgbot.Bot, chatID int64, path, fallbackName, label string) {
+	f, err := os.Open(path)
+	if err != nil {
+		a.logf(chatID, "download_file_error label=%q path=%q err=%v", label, path, err)
+		_, _ = b.SendMessage(ctx, &tgbot.SendMessageParams{
+			ChatID: chatID,
+			Text:   fmt.Sprintf("Не удалось открыть %s (%s): %v", label, path, err),
+		})
+		return
+	}
+	defer func() { _ = f.Close() }()
+
+	filename := filepath.Base(path)
+	if filename == "" || filename == "." || filename == string(filepath.Separator) {
+		filename = fallbackName
+	}
+
+	_, err = b.SendDocument(ctx, &tgbot.SendDocumentParams{
+		ChatID: chatID,
+		Document: &models.InputFileUpload{
+			Filename: filename,
+			Data:     f,
+		},
+		Caption: fmt.Sprintf("%s (%s)", label, path),
+	})
+	if err != nil {
+		a.logf(chatID, "send_document_error label=%q path=%q err=%v", label, path, err)
+		_, _ = b.SendMessage(ctx, &tgbot.SendMessageParams{
+			ChatID: chatID,
+			Text:   fmt.Sprintf("Не удалось отправить %s: %v", label, err),
+		})
+		return
+	}
+	a.logf(chatID, "download_file_sent label=%q path=%q", label, path)
 }
 
 func (a *App) handleListInput(ctx context.Context, b *tgbot.Bot, update *models.Update) {
@@ -96,14 +178,17 @@ func (a *App) handleListInput(ctx context.Context, b *tgbot.Bot, update *models.
 
 	parsed := lists.ParseInput(text)
 	if parsed.Empty {
+		a.logf(chatID, "list_input empty")
 		return
 	}
 	if len(parsed.Invalid) > 0 {
+		a.logf(chatID, "list_input invalid_count=%d", len(parsed.Invalid))
 		msg := "Невалидные записи:\n" + lists.FormatList(parsed.Invalid)
 		_, _ = b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: msg})
 		return
 	}
 	if parsed.Mixed {
+		a.logf(chatID, "list_input mixed_types valid_count=%d", len(parsed.Valid))
 		_, _ = b.SendMessage(ctx, &tgbot.SendMessageParams{
 			ChatID: chatID,
 			Text:   "Отправьте только домены или только IP/CIDR в одном сообщении.",
@@ -114,6 +199,7 @@ func (a *App) handleListInput(ctx context.Context, b *tgbot.Bot, update *models.
 	path := listPath(a.cfg, parsed.Type)
 	label := typeLabel(parsed.Type)
 	items := lists.FormatList(parsed.Valid)
+	a.logf(chatID, "list_input accepted type=%s count=%d path=%q", label, len(parsed.Valid), path)
 
 	msg := fmt.Sprintf("Получено (%s):\n%s", label, items)
 	opID := a.sess.Create(chatID, ActionAdd, parsed.Type, path, parsed.Valid)
@@ -165,12 +251,14 @@ func (a *App) handleCallback(ctx context.Context, b *tgbot.Bot, update *models.U
 
 	op, ok := a.sess.Get(opID)
 	if !ok {
+		a.logf(chatID, "callback stale op_id=%s action=%s", opID, action)
 		_, _ = b.AnswerCallbackQuery(ctx, &tgbot.AnswerCallbackQueryParams{
 			CallbackQueryID: update.CallbackQuery.ID,
-			Text:          "Операция устарела. Отправьте список снова.",
+			Text:            "Операция устарела. Отправьте список снова.",
 		})
 		return
 	}
+	a.logf(chatID, "callback op_kind=%d op_id=%s action=%s", op.Kind, opID, action)
 
 	if action == "cancel" {
 		a.sess.Delete(opID)
@@ -222,6 +310,7 @@ func (a *App) handleCallback(ctx context.Context, b *tgbot.Bot, update *models.U
 func (a *App) handleAdd(ctx context.Context, b *tgbot.Bot, update *models.Update, op *PendingOp) {
 	classified, err := lists.ClassifyValues(op.ListPath, op.Values)
 	if err != nil {
+		a.logf(op.ChatID, "add classify_error path=%q err=%v", op.ListPath, err)
 		a.answerAndEdit(ctx, b, update, "Ошибка чтения файла: "+err.Error())
 		return
 	}
@@ -229,6 +318,7 @@ func (a *App) handleAdd(ctx context.Context, b *tgbot.Bot, update *models.Update
 	newVals, active, disabled := lists.GroupByStatus(classified)
 
 	if len(disabled) > 0 {
+		a.logf(op.ChatID, "add requires_choice disabled=%d new=%d active=%d", len(disabled), len(newVals), len(active))
 		msg := fmt.Sprintf(
 			"Добавление (%s):\n\nБудут включены (были отключены):\n%s\n\nНовые:\n%s\n\nУже активны (пропустятся):\n%s",
 			typeLabel(op.ListType),
@@ -252,15 +342,18 @@ func (a *App) handleAdd(ctx context.Context, b *tgbot.Bot, update *models.Update
 	}
 
 	if len(newVals) == 0 {
+		a.logf(op.ChatID, "add skipped_all_exist count=%d", len(op.Values))
 		a.sess.Delete(op.ID)
 		a.answerAndEdit(ctx, b, update, "Все записи уже есть в списке.")
 		return
 	}
 
 	if err := lists.AddNew(op.ListPath, op.Values); err != nil {
+		a.logf(op.ChatID, "add write_error path=%q err=%v", op.ListPath, err)
 		a.answerAndEdit(ctx, b, update, "Ошибка записи: "+err.Error())
 		return
 	}
+	a.logf(op.ChatID, "add success new_count=%d path=%q", len(newVals), op.ListPath)
 	a.sess.Delete(op.ID)
 	_ = a.svc.MarkFilesChanged()
 	a.answerAndEdit(ctx, b, update, fmt.Sprintf("Добавлено (%d):\n%s", len(newVals), lists.FormatList(newVals)))
@@ -268,9 +361,11 @@ func (a *App) handleAdd(ctx context.Context, b *tgbot.Bot, update *models.Update
 
 func (a *App) execAddAll(ctx context.Context, b *tgbot.Bot, update *models.Update, op *PendingOp) {
 	if err := lists.AddAll(op.ListPath, op.Values); err != nil {
+		a.logf(op.ChatID, "add_all write_error path=%q err=%v", op.ListPath, err)
 		a.answerAndEdit(ctx, b, update, "Ошибка записи: "+err.Error())
 		return
 	}
+	a.logf(op.ChatID, "add_all success count=%d path=%q", len(op.Values), op.ListPath)
 	a.sess.Delete(op.ID)
 	_ = a.svc.MarkFilesChanged()
 	a.answerAndEdit(ctx, b, update, "Записи добавлены/включены.")
@@ -278,9 +373,11 @@ func (a *App) execAddAll(ctx context.Context, b *tgbot.Bot, update *models.Updat
 
 func (a *App) execAddNew(ctx context.Context, b *tgbot.Bot, update *models.Update, op *PendingOp) {
 	if err := lists.AddNew(op.ListPath, op.Values); err != nil {
+		a.logf(op.ChatID, "add_new write_error path=%q err=%v", op.ListPath, err)
 		a.answerAndEdit(ctx, b, update, "Ошибка записи: "+err.Error())
 		return
 	}
+	a.logf(op.ChatID, "add_new success count=%d path=%q", len(op.Values), op.ListPath)
 	a.sess.Delete(op.ID)
 	_ = a.svc.MarkFilesChanged()
 	a.answerAndEdit(ctx, b, update, "Новые записи добавлены.")
@@ -288,9 +385,11 @@ func (a *App) execAddNew(ctx context.Context, b *tgbot.Bot, update *models.Updat
 
 func (a *App) handleDelete(ctx context.Context, b *tgbot.Bot, update *models.Update, op *PendingOp) {
 	if err := lists.Delete(op.ListPath, op.Values); err != nil {
+		a.logf(op.ChatID, "delete write_error path=%q err=%v", op.ListPath, err)
 		a.answerAndEdit(ctx, b, update, "Ошибка удаления: "+err.Error())
 		return
 	}
+	a.logf(op.ChatID, "delete success count=%d path=%q", len(op.Values), op.ListPath)
 	a.sess.Delete(op.ID)
 	_ = a.svc.MarkFilesChanged()
 	a.answerAndEdit(ctx, b, update, fmt.Sprintf("Удалено:\n%s", lists.FormatList(op.Values)))
@@ -299,6 +398,7 @@ func (a *App) handleDelete(ctx context.Context, b *tgbot.Bot, update *models.Upd
 func (a *App) handleDisablePrompt(ctx context.Context, b *tgbot.Bot, update *models.Update, op *PendingOp) {
 	classified, err := lists.ClassifyValues(op.ListPath, op.Values)
 	if err != nil {
+		a.logf(op.ChatID, "disable classify_error path=%q err=%v", op.ListPath, err)
 		a.answerAndEdit(ctx, b, update, "Ошибка чтения файла: "+err.Error())
 		return
 	}
@@ -316,6 +416,7 @@ func (a *App) handleDisablePrompt(ctx context.Context, b *tgbot.Bot, update *mod
 	a.sess.Delete(op.ID)
 
 	if len(newVals) > 0 {
+		a.logf(op.ChatID, "disable requires_add_missing missing=%d active=%d disabled=%d", len(newVals), len(active), len(disabled))
 		confirmID := a.sess.Create(op.ChatID, ActionDisableAddMissing, op.ListType, op.ListPath, op.Values)
 		kb := &models.InlineKeyboardMarkup{
 			InlineKeyboard: [][]models.InlineKeyboardButton{
@@ -328,9 +429,11 @@ func (a *App) handleDisablePrompt(ctx context.Context, b *tgbot.Bot, update *mod
 	}
 
 	if len(active) == 0 {
+		a.logf(op.ChatID, "disable skipped_already_disabled count=%d", len(op.Values))
 		a.answerAndEdit(ctx, b, update, "Все записи уже отключены.")
 		return
 	}
+	a.logf(op.ChatID, "disable confirm_only active=%d", len(active))
 
 	confirmID := a.sess.Create(op.ChatID, ActionDisableConfirm, op.ListType, op.ListPath, op.Values)
 	kb := &models.InlineKeyboardMarkup{
@@ -344,9 +447,11 @@ func (a *App) handleDisablePrompt(ctx context.Context, b *tgbot.Bot, update *mod
 
 func (a *App) execDisable(ctx context.Context, b *tgbot.Bot, update *models.Update, op *PendingOp) {
 	if err := lists.DisableExistingOnly(op.ListPath, op.Values); err != nil {
+		a.logf(op.ChatID, "disable_existing write_error path=%q err=%v", op.ListPath, err)
 		a.answerAndEdit(ctx, b, update, "Ошибка: "+err.Error())
 		return
 	}
+	a.logf(op.ChatID, "disable_existing success count=%d path=%q", len(op.Values), op.ListPath)
 	a.sess.Delete(op.ID)
 	_ = a.svc.MarkFilesChanged()
 	a.answerAndEdit(ctx, b, update, "Записи отключены.")
@@ -354,9 +459,11 @@ func (a *App) execDisable(ctx context.Context, b *tgbot.Bot, update *models.Upda
 
 func (a *App) execDisableWithMissing(ctx context.Context, b *tgbot.Bot, update *models.Update, op *PendingOp) {
 	if err := lists.Disable(op.ListPath, op.Values); err != nil {
+		a.logf(op.ChatID, "disable_with_missing write_error path=%q err=%v", op.ListPath, err)
 		a.answerAndEdit(ctx, b, update, "Ошибка: "+err.Error())
 		return
 	}
+	a.logf(op.ChatID, "disable_with_missing success count=%d path=%q", len(op.Values), op.ListPath)
 	a.sess.Delete(op.ID)
 	_ = a.svc.MarkFilesChanged()
 	a.answerAndEdit(ctx, b, update, "Записи отключены (включая добавленные).")
@@ -364,15 +471,18 @@ func (a *App) execDisableWithMissing(ctx context.Context, b *tgbot.Bot, update *
 
 func (a *App) handleStartCreate(ctx context.Context, b *tgbot.Bot, update *models.Update, chatID int64) {
 	if err := lists.CreateFiles(a.cfg.DomainList, a.cfg.IPList); err != nil {
+		a.logf(chatID, "create_files_error domain=%q ip=%q err=%v", a.cfg.DomainList, a.cfg.IPList, err)
 		a.answerAndEdit(ctx, b, update, "Ошибка создания файлов: "+err.Error())
 		return
 	}
 	a.ready[chatID] = true
+	a.logf(chatID, "create_files_success domain=%q ip=%q", a.cfg.DomainList, a.cfg.IPList)
 	a.answerAndEdit(ctx, b, update, a.welcomeText())
 }
 
 func (a *App) handleRestart(ctx context.Context, b *tgbot.Bot, update *models.Update, opID string) {
 	if a.cfg.RestartCmd == "" {
+		a.logf(update.CallbackQuery.Message.Message.Chat.ID, "restart skipped reason=restart_cmd_empty")
 		a.answerAndEdit(ctx, b, update, "Команда перезапуска не настроена.")
 		return
 	}
@@ -386,6 +496,7 @@ func (a *App) handleRestart(ctx context.Context, b *tgbot.Bot, update *models.Up
 
 	a.sess.Delete(opID)
 	label := a.cfg.ServiceLabel
+	a.logf(chatID, "restart started label=%q cmd=%q", label, a.cfg.RestartCmd)
 
 	_, _ = b.EditMessageText(ctx, &tgbot.EditMessageTextParams{
 		ChatID:    chatID,
@@ -407,6 +518,7 @@ func (a *App) handleRestart(ctx context.Context, b *tgbot.Bot, update *models.Up
 
 	if res.Success {
 		_ = a.svc.MarkRestarted()
+		a.logf(chatID, "restart success duration_sec=%d", int(time.Since(start).Seconds()))
 		text := fmt.Sprintf("✅ %s перезапущен (%ds).", label, int(time.Since(start).Seconds()))
 		if res.Output != "" {
 			text += "\n\n" + strings.TrimSpace(res.Output)
@@ -423,6 +535,7 @@ func (a *App) handleRestart(ctx context.Context, b *tgbot.Bot, update *models.Up
 	if res.Err != nil {
 		errText = res.Err.Error()
 	}
+	a.logf(chatID, "restart failed err=%q", errText)
 	text := fmt.Sprintf("❌ Ошибка перезапуска %s: %s", label, errText)
 	if res.Output != "" {
 		text += "\n\n" + strings.TrimSpace(res.Output)

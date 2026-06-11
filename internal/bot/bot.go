@@ -15,11 +15,16 @@ import (
 )
 
 type App struct {
-	cfg     *config.Config
-	svc     *service.Manager
-	sess    *SessionStore
-	ready   map[int64]bool
+	cfg   *config.Config
+	svc   *service.Manager
+	sess  *SessionStore
+	ready map[int64]bool
 }
+
+const (
+	menuBtnDownloadIP      = "Скачать файл IP"
+	menuBtnDownloadDomains = "Скачать файл доменов"
+)
 
 func Run(ctx context.Context, cfg *config.Config) error {
 	if !cfg.Enabled {
@@ -36,6 +41,10 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		sess:  NewSessionStore(),
 		ready: make(map[int64]bool),
 	}
+	log.Printf(
+		"lst-signbox-lists-tgbot init: domain_list=%s ip_list=%s restart_cmd_set=%t state_path=%s",
+		cfg.DomainList, cfg.IPList, cfg.RestartCmd != "", cfg.StatePath,
+	)
 
 	opts := []tgbot.Option{
 		tgbot.WithDefaultHandler(app.defaultHandler),
@@ -55,15 +64,24 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	return nil
 }
 
+func (a *App) logf(chatID int64, format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	log.Printf("lst-signbox-lists-tgbot chat_id=%d %s", chatID, msg)
+}
+
 func (a *App) defaultHandler(ctx context.Context, b *tgbot.Bot, update *models.Update) {
 	if update.Message == nil || update.Message.Text == "" {
 		return
 	}
-	if isStartCommand(update.Message.Text) {
+	text := strings.TrimSpace(update.Message.Text)
+	if isStartCommand(text) {
 		a.handleStart(ctx, b, update)
 		return
 	}
-	if strings.HasPrefix(update.Message.Text, "/") {
+	if a.handleMenuAction(ctx, b, update.Message.Chat.ID, text) {
+		return
+	}
+	if strings.HasPrefix(text, "/") {
 		return
 	}
 
@@ -86,10 +104,12 @@ func isStartCommand(text string) bool {
 		return false
 	}
 	cmd := parts[0]
-	if cmd == "/start" {
-		return true
+	if !strings.HasPrefix(cmd, "/") {
+		return false
 	}
-	return strings.HasPrefix(cmd, "/start@")
+	cmd = strings.TrimPrefix(cmd, "/")
+	cmd = strings.SplitN(cmd, "@", 2)[0]
+	return strings.EqualFold(cmd, "start")
 }
 
 func listPath(cfg *config.Config, t lists.EntryType) string {

@@ -93,6 +93,34 @@ option service_label 'маршрутизацию'
 
 После изменения списков бот покажет предупреждение и кнопку перезапуска.
 
+## Логи операций
+
+По умолчанию бот пишет журнал действий в файл:
+
+```bash
+/etc/lst-signbox-lists-tgbot/logs/bot.log
+```
+
+Путь можно изменить через UCI:
+
+```bash
+uci set lst-signbox-lists-tgbot.main.log_path='/etc/lst-signbox-lists-tgbot/logs/bot.log'
+uci commit lst-signbox-lists-tgbot
+/etc/init.d/lst-signbox-lists-tgbot restart
+```
+
+Полезные команды на роутере:
+
+```bash
+# Последние 100 строк
+tail -n 100 /etc/lst-signbox-lists-tgbot/logs/bot.log
+
+# Смотреть в реальном времени
+tail -f /etc/lst-signbox-lists-tgbot/logs/bot.log
+```
+
+Примеры событий: `/start`, разбор входного списка, нажатия кнопок, добавление/удаление/отключение записей, скачивание файлов, запуск и результат перезапуска сервиса, ошибки.
+
 ## Локальная разработка
 
 ```bash
@@ -101,6 +129,7 @@ export LST_SIGNBOX_LISTS_TGBOT_DOMAIN_LIST="/tmp/domain_list.lst"
 export LST_SIGNBOX_LISTS_TGBOT_IP_LIST="/tmp/ip_list.lst"
 export LST_SIGNBOX_LISTS_TGBOT_RESTART_CMD="echo restart"
 export LST_SIGNBOX_LISTS_TGBOT_STATE_PATH="/tmp/lst-signbox-lists-tgbot-state.json"
+export LST_SIGNBOX_LISTS_TGBOT_LOG_PATH="/tmp/lst-signbox-lists-tgbot.log"
 
 make build
 ./lst-signbox-lists-tgbot

@@ -34,6 +34,10 @@ return view.extend({
 		o.default = '/etc/lst-signbox-lists-tgbot/ip_list.lst';
 		o.rmempty = false;
 
+		o = s.option(form.Value, 'log_path', _('Bot log file'));
+		o.default = '/etc/lst-signbox-lists-tgbot/logs/bot.log';
+		o.rmempty = false;
+
 		return m.render();
 	},
 });
