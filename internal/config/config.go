@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -14,6 +15,7 @@ const (
 	defaultIP      = "/etc/lst-signbox-lists-tgbot/ip_list.lst"
 	defaultLabel   = "сервис"
 	defaultState   = "/var/lib/lst-signbox-lists-tgbot/state.json"
+	defaultLogPath = "/etc/lst-signbox-lists-tgbot/logs/bot.log"
 )
 
 type Config struct {
@@ -24,6 +26,7 @@ type Config struct {
 	RestartCmd   string
 	ServiceLabel string
 	StatePath    string
+	LogPath      string
 }
 
 func Load() (*Config, error) {
@@ -33,6 +36,7 @@ func Load() (*Config, error) {
 		IPList:       defaultIP,
 		ServiceLabel: defaultLabel,
 		StatePath:    defaultState,
+		LogPath:      defaultLogPath,
 	}
 
 	token := os.Getenv("LST_SIGNBOX_LISTS_TGBOT_TOKEN")
@@ -55,6 +59,9 @@ func Load() (*Config, error) {
 		}
 		if v := getenvAny("LST_SIGNBOX_LISTS_TGBOT_STATE_PATH", "LISTS_TG_STATE_PATH"); v != "" {
 			cfg.StatePath = v
+		}
+		if v := getenvAny("LST_SIGNBOX_LISTS_TGBOT_LOG_PATH", "LISTS_TG_LOG_PATH"); v != "" {
+			cfg.LogPath = normalizeLogPath(v)
 		}
 		if v := getenvAny("LST_SIGNBOX_LISTS_TGBOT_ENABLED", "LISTS_TG_ENABLED"); v != "" {
 			cfg.Enabled = v == "1" || strings.EqualFold(v, "true")
@@ -88,8 +95,22 @@ func Load() (*Config, error) {
 	if v, err := uciGet("main", "state_path"); err == nil && v != "" {
 		cfg.StatePath = v
 	}
+	if v, err := uciGet("main", "log_path"); err == nil && v != "" {
+		cfg.LogPath = normalizeLogPath(v)
+	}
 
 	return cfg, nil
+}
+
+func normalizeLogPath(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return defaultLogPath
+	}
+	if strings.HasSuffix(s, "/") || filepath.Ext(s) == "" {
+		return filepath.Join(s, "bot.log")
+	}
+	return s
 }
 
 func uciGet(section, option string) (string, error) {
