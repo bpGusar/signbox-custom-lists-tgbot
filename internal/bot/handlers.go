@@ -300,6 +300,14 @@ func (a *App) handleListInput(ctx context.Context, b *tgbot.Bot, update *models.
 	text := update.Message.Text
 
 	parsed := lists.ParseInput(text)
+	if parsed.Mixed {
+		a.logf(chatID, "list_input mixed_types")
+		_, _ = b.SendMessage(ctx, &tgbot.SendMessageParams{
+			ChatID: chatID,
+			Text:   buildMixedInputMessage(text),
+		})
+		return
+	}
 	if parsed.Empty {
 		a.logf(chatID, "list_input empty")
 		return
@@ -308,14 +316,6 @@ func (a *App) handleListInput(ctx context.Context, b *tgbot.Bot, update *models.
 		a.logf(chatID, "list_input invalid_count=%d", len(parsed.Invalid))
 		msg := "❌ Невалидные записи:\n" + lists.FormatList(parsed.Invalid)
 		_, _ = b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: msg})
-		return
-	}
-	if parsed.Mixed {
-		a.logf(chatID, "list_input mixed_types count=%d", len(parsed.Valid))
-		_, _ = b.SendMessage(ctx, &tgbot.SendMessageParams{
-			ChatID: chatID,
-			Text:   buildMixedInputMessage(text),
-		})
 		return
 	}
 

@@ -24,6 +24,32 @@ func TestParseInputMixed(t *testing.T) {
 	if !r.Mixed {
 		t.Fatal("expected mixed")
 	}
+	if r.Empty {
+		t.Fatal("mixed input must not be empty")
+	}
+}
+
+func TestParseInputMixedMultiline(t *testing.T) {
+	r := ParseInput("example.com, github.com\nkick.com\n192.168.1.0/24")
+	if !r.Mixed {
+		t.Fatalf("expected mixed, got %+v", r)
+	}
+	if r.Empty {
+		t.Fatalf("mixed input must not be empty, got %+v", r)
+	}
+}
+
+func TestParseInputMixedUserReport(t *testing.T) {
+	r := ParseInput("kick.com\nrevanced.app\n104.20.32.0/20")
+	if !r.Mixed {
+		t.Fatalf("expected mixed, got %+v", r)
+	}
+	if r.Empty {
+		t.Fatalf("mixed input must not be empty, got %+v", r)
+	}
+	if len(r.Invalid) > 0 {
+		t.Fatalf("unexpected invalid: %+v", r.Invalid)
+	}
 }
 
 func TestParseInputDisabledLines(t *testing.T) {
