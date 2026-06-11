@@ -504,12 +504,14 @@ func (a *App) handleRestart(ctx context.Context, b *tgbot.Bot, update *models.Up
 		Text:      fmt.Sprintf("Перезапуск %s…", label),
 	})
 
-	rctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	// Callback context can be short-lived; run restart in detached context
+	// so the command is not cancelled right after handler returns.
+	rctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
 	start := time.Now()
 	res := service.RunRestartWithProgress(rctx, a.cfg.RestartCmd, func(elapsed time.Duration) {
-		_, _ = b.EditMessageText(ctx, &tgbot.EditMessageTextParams{
+		_, _ = b.EditMessageText(rctx, &tgbot.EditMessageTextParams{
 			ChatID:    chatID,
 			MessageID: messageID,
 			Text:      fmt.Sprintf("Перезапуск %s… (%ds)", label, int(elapsed.Seconds())),
@@ -523,7 +525,7 @@ func (a *App) handleRestart(ctx context.Context, b *tgbot.Bot, update *models.Up
 		if res.Output != "" {
 			text += "\n\n" + strings.TrimSpace(res.Output)
 		}
-		_, _ = b.EditMessageText(ctx, &tgbot.EditMessageTextParams{
+		_, _ = b.EditMessageText(rctx, &tgbot.EditMessageTextParams{
 			ChatID:    chatID,
 			MessageID: messageID,
 			Text:      text,
@@ -540,7 +542,7 @@ func (a *App) handleRestart(ctx context.Context, b *tgbot.Bot, update *models.Up
 	if res.Output != "" {
 		text += "\n\n" + strings.TrimSpace(res.Output)
 	}
-	_, _ = b.EditMessageText(ctx, &tgbot.EditMessageTextParams{
+	_, _ = b.EditMessageText(rctx, &tgbot.EditMessageTextParams{
 		ChatID:    chatID,
 		MessageID: messageID,
 		Text:      text,
