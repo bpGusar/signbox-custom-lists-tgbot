@@ -12,13 +12,15 @@ import (
 	"lst-signbox-lists-tgbot/internal/config"
 	"lst-signbox-lists-tgbot/internal/lists"
 	"lst-signbox-lists-tgbot/internal/service"
+	"lst-signbox-lists-tgbot/internal/version"
 )
 
 type App struct {
-	cfg   *config.Config
-	svc   *service.Manager
-	sess  *SessionStore
-	ready map[int64]bool
+	cfg        *config.Config
+	svc        *service.Manager
+	sess       *SessionStore
+	ready      map[int64]bool
+	verChecker *version.Checker
 }
 
 const (
@@ -39,16 +41,19 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		return fmt.Errorf("telegram token is empty")
 	}
 
+	verChecker := version.NewChecker()
 	app := &App{
-		cfg:   cfg,
-		svc:   service.NewManager(cfg.StatePath),
-		sess:  NewSessionStore(),
-		ready: make(map[int64]bool),
+		cfg:        cfg,
+		svc:        service.NewManager(cfg.StatePath),
+		sess:       NewSessionStore(),
+		ready:      make(map[int64]bool),
+		verChecker: verChecker,
 	}
 	log.Printf(
-		"lst-signbox-lists-tgbot init: domain_list=%s ip_list=%s restart_cmd_set=%t auto_restart=%t state_path=%s",
-		cfg.DomainList, cfg.IPList, cfg.RestartCmd != "", cfg.AutoRestart, cfg.StatePath,
+		"lst-signbox-lists-tgbot init: version=%s domain_list=%s ip_list=%s restart_cmd_set=%t auto_restart=%t state_path=%s",
+		version.Display(), cfg.DomainList, cfg.IPList, cfg.RestartCmd != "", cfg.AutoRestart, cfg.StatePath,
 	)
+	go verChecker.Refresh(context.Background())
 
 	opts := []tgbot.Option{
 		tgbot.WithDefaultHandler(app.defaultHandler),
