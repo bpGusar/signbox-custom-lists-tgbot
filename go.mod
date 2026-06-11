@@ -1,4 +1,4 @@
-module lists-tg
+module lst-signbox-lists-tgbot
 
 go 1.22
 

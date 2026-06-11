@@ -131,7 +131,7 @@ func writeAtomic(path string, lines []string) error {
 		content += "\n"
 	}
 
-	tmp, err := os.CreateTemp(dir, ".lists-tg-*")
+	tmp, err := os.CreateTemp(dir, ".lst-signbox-lists-tgbot-*")
 	if err != nil {
 		return err
 	}

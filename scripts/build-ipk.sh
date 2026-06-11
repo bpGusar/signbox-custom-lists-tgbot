@@ -28,7 +28,7 @@ update_manifest() {
 
 build_arch() {
 	local arch="$1"
-	local image="lists-tg-ipk:${arch}"
+	local image="lst-signbox-lists-tgbot-ipk:${arch}"
 	local out="${ROOT}/dist/ipk/${arch}"
 	local container tmp
 
@@ -55,11 +55,11 @@ build_arch() {
 	docker rm -f "$container" >/dev/null
 	container=""
 
-	find "$tmp" -name 'lists-tg_*.ipk' -exec cp -f {} "$out/" \;
-	find "$tmp" -name 'luci-app-lists-tg_*.ipk' -exec cp -f {} "$out/" \;
+	find "$tmp" -name 'lst-signbox-lists-tgbot_*.ipk' -exec cp -f {} "$out/" \;
+	find "$tmp" -name 'luci-app-lst-signbox-lists-tgbot_*.ipk' -exec cp -f {} "$out/" \;
 
-	[ -n "$(find "$out" -maxdepth 1 -name 'lists-tg_*.ipk' -print -quit)" ] \
-		|| die "lists-tg ipk not produced for ${arch}"
+	[ -n "$(find "$out" -maxdepth 1 -name 'lst-signbox-lists-tgbot_*.ipk' -print -quit)" ] \
+		|| die "lst-signbox-lists-tgbot ipk not produced for ${arch}"
 
 	log "done: ${out}"
 	ls -la "$out/"

@@ -1,4 +1,4 @@
-# lists-tg
+# lst-signbox-lists-tgbot
 
 Лёгкий Telegram-бот для OpenWrt 24.10: управление файлами `domain_list.lst` и `ip_list.lst` через inline-кнопки.
 
@@ -27,7 +27,7 @@
 **Автоматически:**
 
 ```bash
-sh <(wget -O - https://raw.githubusercontent.com/bpGusar/signbox-custom-lists-tgbot/main/install.sh)
+wget -qO- https://raw.githubusercontent.com/bpGusar/signbox-custom-lists-tgbot/main/install.sh | sh
 ```
 
 `install.sh` скачивает `.ipk` из GitHub Release (приоритет), иначе из `dist/ipk/` в репозитории.
@@ -53,8 +53,8 @@ TARGETS=mipsel_24kc make ipk
 
 - **Enabled** — включить бота
 - **Bot Token** — токен от BotFather
-- **Domain list file** — путь к `domain_list.lst` (по умолчанию `/etc/lists-tg/domain_list.lst`)
-- **IP/CIDR list file** — путь к `ip_list.lst` (по умолчанию `/etc/lists-tg/ip_list.lst`)
+- **Domain list file** — путь к `domain_list.lst` (по умолчанию `/etc/lst-signbox-lists-tgbot/domain_list.lst`)
+- **IP/CIDR list file** — путь к `ip_list.lst` (по умолчанию `/etc/lst-signbox-lists-tgbot/ip_list.lst`)
 
 Сохранить и применить.
 
@@ -84,7 +84,7 @@ example.org
 
 ## Перезапуск сервиса (опционально)
 
-Через UCI (`/etc/config/lists-tg`):
+Через UCI (`/etc/config/lst-signbox-lists-tgbot`):
 
 ```
 option restart_cmd '/etc/init.d/your-service restart'
@@ -96,26 +96,26 @@ option service_label 'маршрутизацию'
 ## Локальная разработка
 
 ```bash
-export LISTS_TG_TOKEN="your-token"
-export LISTS_TG_DOMAIN_LIST="/tmp/domain_list.lst"
-export LISTS_TG_IP_LIST="/tmp/ip_list.lst"
-export LISTS_TG_RESTART_CMD="echo restart"
-export LISTS_TG_STATE_PATH="/tmp/lists-tg-state.json"
+export LST_SIGNBOX_LISTS_TGBOT_TOKEN="your-token"
+export LST_SIGNBOX_LISTS_TGBOT_DOMAIN_LIST="/tmp/domain_list.lst"
+export LST_SIGNBOX_LISTS_TGBOT_IP_LIST="/tmp/ip_list.lst"
+export LST_SIGNBOX_LISTS_TGBOT_RESTART_CMD="echo restart"
+export LST_SIGNBOX_LISTS_TGBOT_STATE_PATH="/tmp/lst-signbox-lists-tgbot-state.json"
 
 make build
-./lists-tg
+./lst-signbox-lists-tgbot
 ```
 
 ## Структура
 
 ```
-cmd/lists-tg/          — точка входа
+cmd/lst-signbox-lists-tgbot/          — точка входа
 internal/bot/          — Telegram handlers
 internal/lists/        — работа с .lst файлами
 internal/config/       — UCI / env
 internal/service/      — state.json и перезапуск
-openwrt/lists-tg/      — пакет OpenWrt
-openwrt/luci-app-lists-tg/ — LuCI
+openwrt/lists-tg/      — пакет OpenWrt (pkg: lst-signbox-lists-tgbot)
+openwrt/luci-app-lists-tg/ — LuCI (pkg: luci-app-lst-signbox-lists-tgbot)
 ```
 
 ## Лицензия

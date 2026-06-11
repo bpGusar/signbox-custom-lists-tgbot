@@ -6,8 +6,8 @@ import (
 	"os"
 	"os/signal"
 
-	"lists-tg/internal/bot"
-	"lists-tg/internal/config"
+	"lst-signbox-lists-tgbot/internal/bot"
+	"lst-signbox-lists-tgbot/internal/config"
 )
 
 func main() {

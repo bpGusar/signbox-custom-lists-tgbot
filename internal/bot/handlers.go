@@ -9,8 +9,8 @@ import (
 	tgbot "github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
 
-	"lists-tg/internal/lists"
-	"lists-tg/internal/service"
+	"lst-signbox-lists-tgbot/internal/lists"
+	"lst-signbox-lists-tgbot/internal/service"
 )
 
 const cbPrefix = "s:"
@@ -55,6 +55,9 @@ func (a *App) welcomeText() string {
 
 	if banner := a.svc.StaleBanner(); banner != "" {
 		text = banner + "\n\n" + text
+		if reason := a.restartHiddenReason(); reason != "" {
+			text += "\n\n" + reason
+		}
 	}
 	return text
 }
@@ -67,16 +70,24 @@ func (a *App) staleKeyboard() *models.InlineKeyboardMarkup {
 }
 
 func (a *App) restartButtonRow() []models.InlineKeyboardButton {
-	if a.cfg.RestartCmd == "" {
-		return nil
-	}
 	st, _ := a.svc.Load()
-	if st == nil || !st.ServiceStale {
+	if st == nil || !st.ServiceStale || a.cfg.RestartCmd == "" {
 		return nil
 	}
 	label := "Перезапустить " + a.cfg.ServiceLabel
 	id := a.sess.Create(0, ActionRestart, 0, "", nil)
 	return []models.InlineKeyboardButton{{Text: label, CallbackData: cbPrefix + id}}
+}
+
+func (a *App) restartHiddenReason() string {
+	st, err := a.svc.Load()
+	if err != nil || st == nil || !st.ServiceStale {
+		return ""
+	}
+	if a.cfg.RestartCmd == "" {
+		return "Кнопка перезапуска не показана: не настроен restart_cmd."
+	}
+	return ""
 }
 
 func (a *App) handleListInput(ctx context.Context, b *tgbot.Bot, update *models.Update) {
@@ -125,6 +136,9 @@ func (a *App) handleListInput(ctx context.Context, b *tgbot.Bot, update *models.
 	reply := msg
 	if banner := a.svc.StaleBanner(); banner != "" {
 		reply = banner + "\n\n" + msg
+		if reason := a.restartHiddenReason(); reason != "" {
+			reply += "\n\n" + reason
+		}
 	}
 
 	_, _ = b.SendMessage(ctx, &tgbot.SendMessageParams{
@@ -431,6 +445,9 @@ func (a *App) answerAndEditMarkup(ctx context.Context, b *tgbot.Bot, update *mod
 
 	if banner := a.svc.StaleBanner(); banner != "" && !strings.Contains(text, "⚠️") {
 		text = banner + "\n\n" + text
+		if reason := a.restartHiddenReason(); reason != "" {
+			text += "\n\n" + reason
+		}
 	}
 
 	params := &tgbot.EditMessageTextParams{

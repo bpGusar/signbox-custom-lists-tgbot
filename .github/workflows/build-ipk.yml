@@ -52,7 +52,7 @@ jobs:
         with:
           context: .
           file: ./Dockerfile-ipk
-          tags: lists-tg-ipk:${{ matrix.arch }}
+          tags: lst-signbox-lists-tgbot-ipk:${{ matrix.arch }}
           build-args: |
             ARCH=${{ matrix.arch }}
             OPENWRT_VERSION=24.10.5
@@ -62,12 +62,12 @@ jobs:
 
       - name: Extract IPK files
         run: |
-          cid=$(docker create lists-tg-ipk:${{ matrix.arch }})
+          cid=$(docker create lst-signbox-lists-tgbot-ipk:${{ matrix.arch }})
           mkdir -p "dist/ipk/${{ matrix.arch }}" /tmp/ipk-extract
           docker cp "$cid:/builder/bin/packages/." /tmp/ipk-extract/
           docker rm "$cid"
-          find /tmp/ipk-extract -name 'lists-tg_*.ipk' -exec cp -f {} "dist/ipk/${{ matrix.arch }}/" \;
-          find /tmp/ipk-extract -name 'luci-app-lists-tg_*.ipk' -exec cp -f {} "dist/ipk/${{ matrix.arch }}/" \;
+          find /tmp/ipk-extract -name 'lst-signbox-lists-tgbot_*.ipk' -exec cp -f {} "dist/ipk/${{ matrix.arch }}/" \;
+          find /tmp/ipk-extract -name 'luci-app-lst-signbox-lists-tgbot_*.ipk' -exec cp -f {} "dist/ipk/${{ matrix.arch }}/" \;
           ls -la "dist/ipk/${{ matrix.arch }}/"
 
       - uses: actions/upload-artifact@v4

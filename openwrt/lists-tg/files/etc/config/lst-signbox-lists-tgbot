@@ -1,0 +1,8 @@
+config main 'main'
+	option enabled '1'
+	option token ''
+	option domain_list '/etc/lst-signbox-lists-tgbot/domain_list.lst'
+	option ip_list '/etc/lst-signbox-lists-tgbot/ip_list.lst'
+	option restart_cmd ''
+	option service_label 'сервис'
+	option state_path '/var/lib/lst-signbox-lists-tgbot/state.json'

@@ -1,5 +1,5 @@
-BINARY := lists-tg
-PKG := ./cmd/lists-tg
+BINARY := lst-signbox-lists-tgbot
+PKG := ./cmd/lst-signbox-lists-tgbot
 
 .PHONY: build test tidy clean cross ipk ipk-aarch64
 
