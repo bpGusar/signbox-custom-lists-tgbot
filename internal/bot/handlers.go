@@ -53,7 +53,7 @@ func (a *App) sendStartCheck(ctx context.Context, b *tgbot.Bot, chatID int64) {
 	if kb := a.staleKeyboard(); kb != nil {
 		_, _ = b.SendMessage(ctx, &tgbot.SendMessageParams{
 			ChatID:      chatID,
-			Text:        "Доступен перезапуск сервиса:",
+			Text:        "Доступны действия по сервису:",
 			ReplyMarkup: kb,
 		})
 	}
@@ -75,8 +75,15 @@ func (a *App) welcomeText() string {
 }
 
 func (a *App) staleKeyboard() *models.InlineKeyboardMarkup {
+	rows := make([][]models.InlineKeyboardButton, 0, 2)
 	if row := a.restartButtonRow(); row != nil {
-		return &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{row}}
+		rows = append(rows, row)
+	}
+	if row := a.integrationButtonRow(); row != nil {
+		rows = append(rows, row)
+	}
+	if len(rows) > 0 {
+		return &models.InlineKeyboardMarkup{InlineKeyboard: rows}
 	}
 	return nil
 }
@@ -89,6 +96,14 @@ func (a *App) restartButtonRow() []models.InlineKeyboardButton {
 	label := "Перезапустить " + a.cfg.ServiceLabel
 	id := a.sess.Create(0, ActionRestart, 0, "", nil)
 	return []models.InlineKeyboardButton{{Text: label, CallbackData: cbPrefix + id}}
+}
+
+func (a *App) integrationButtonRow() []models.InlineKeyboardButton {
+	if !isPodkopCommand(a.cfg.RestartCmd) {
+		return nil
+	}
+	id := a.sess.Create(0, ActionCheckIntegration, 0, "", nil)
+	return []models.InlineKeyboardButton{{Text: "Проверить интеграцию Podkop", CallbackData: cbPrefix + id}}
 }
 
 func (a *App) restartHiddenReason() string {
@@ -217,6 +232,9 @@ func (a *App) handleListInput(ctx context.Context, b *tgbot.Bot, update *models.
 	if rk := a.restartButtonRow(); rk != nil {
 		rows = append(rows, rk)
 	}
+	if ik := a.integrationButtonRow(); ik != nil {
+		rows = append(rows, ik)
+	}
 	kb := &models.InlineKeyboardMarkup{InlineKeyboard: rows}
 
 	reply := msg
@@ -300,6 +318,9 @@ func (a *App) handleCallback(ctx context.Context, b *tgbot.Bot, update *models.U
 		a.sendStartCheck(ctx, b, chatID)
 	case ActionRestart:
 		a.handleRestart(ctx, b, update, opID)
+	case ActionCheckIntegration:
+		a.sess.Delete(opID)
+		a.handleCheckIntegration(ctx, b, update)
 	default:
 		_, _ = b.AnswerCallbackQuery(ctx, &tgbot.AnswerCallbackQueryParams{
 			CallbackQueryID: update.CallbackQuery.ID,
@@ -522,6 +543,23 @@ func (a *App) handleRestart(ctx context.Context, b *tgbot.Bot, update *models.Up
 		_ = a.svc.MarkRestarted()
 		a.logf(chatID, "restart success duration_sec=%d", int(time.Since(start).Seconds()))
 		text := fmt.Sprintf("✅ %s перезапущен (%ds).", label, int(time.Since(start).Seconds()))
+		if isPodkopCommand(a.cfg.RestartCmd) {
+			bindings, err := service.CheckPodkopBindings(rctx, a.cfg.DomainList, a.cfg.IPList)
+			if err != nil {
+				a.logf(chatID, "podkop_binding_check_error err=%v", err)
+			} else if !bindings.DomainBound || !bindings.IPBound {
+				missing := make([]string, 0, 2)
+				if !bindings.DomainBound {
+					missing = append(missing, "• local_domain_lists: "+a.cfg.DomainList)
+				}
+				if !bindings.IPBound {
+					missing = append(missing, "• local_subnet_lists: "+a.cfg.IPList)
+				}
+				text += "\n\n⚠️ Podkop перезапущен, но файлы не привязаны в /etc/config/podkop:\n" +
+					strings.Join(missing, "\n") +
+					"\n\nДобавьте эти пути в нужной секции Podkop (Sections -> Local lists), затем перезапустите Podkop снова."
+			}
+		}
 		if res.Output != "" {
 			text += "\n\n" + strings.TrimSpace(res.Output)
 		}
@@ -547,6 +585,42 @@ func (a *App) handleRestart(ctx context.Context, b *tgbot.Bot, update *models.Up
 		MessageID: messageID,
 		Text:      text,
 	})
+}
+
+func isPodkopCommand(cmd string) bool {
+	return strings.Contains(strings.ToLower(cmd), "podkop")
+}
+
+func (a *App) handleCheckIntegration(ctx context.Context, b *tgbot.Bot, update *models.Update) {
+	if !isPodkopCommand(a.cfg.RestartCmd) {
+		a.answerAndEdit(ctx, b, update, "Проверка интеграции доступна только для podkop.")
+		return
+	}
+	st, err := service.CheckPodkopBindings(ctx, a.cfg.DomainList, a.cfg.IPList)
+	if err != nil {
+		a.answerAndEdit(ctx, b, update, "Не удалось проверить интеграцию Podkop: "+err.Error())
+		return
+	}
+
+	domainLine := "❌ не подключен"
+	if st.DomainBound {
+		domainLine = "✅ подключен"
+	}
+	ipLine := "❌ не подключен"
+	if st.IPBound {
+		ipLine = "✅ подключен"
+	}
+	text := "Проверка интеграции Podkop:\n" +
+		"• local_domain_lists: " + domainLine + "\n" +
+		"• local_subnet_lists: " + ipLine
+
+	if !st.DomainBound || !st.IPBound {
+		text += "\n\nДобавьте пути списков в нужную секцию Podkop (Sections -> Local lists):\n" +
+			"• " + a.cfg.DomainList + "\n" +
+			"• " + a.cfg.IPList
+	}
+
+	a.answerAndEdit(ctx, b, update, text)
 }
 
 func (a *App) answerAndEdit(ctx context.Context, b *tgbot.Bot, update *models.Update, text string) {
@@ -575,6 +649,13 @@ func (a *App) answerAndEditMarkup(ctx context.Context, b *tgbot.Bot, update *mod
 			kb = &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{rk}}
 		} else {
 			kb.InlineKeyboard = append(kb.InlineKeyboard, rk)
+		}
+	}
+	if ik := a.integrationButtonRow(); ik != nil {
+		if kb == nil {
+			kb = &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{ik}}
+		} else {
+			kb.InlineKeyboard = append(kb.InlineKeyboard, ik)
 		}
 	}
 	if kb != nil {
