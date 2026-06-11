@@ -25,6 +25,7 @@ type Config struct {
 	IPList       string
 	RestartCmd   string
 	ServiceLabel string
+	AutoRestart  bool
 	StatePath    string
 	LogPath      string
 }
@@ -66,6 +67,9 @@ func Load() (*Config, error) {
 		if v := getenvAny("LST_SIGNBOX_LISTS_TGBOT_ENABLED", "LISTS_TG_ENABLED"); v != "" {
 			cfg.Enabled = v == "1" || strings.EqualFold(v, "true")
 		}
+		if v := getenvAny("LST_SIGNBOX_LISTS_TGBOT_AUTO_RESTART", "LISTS_TG_AUTO_RESTART"); v != "" {
+			cfg.AutoRestart = ParseBool(v)
+		}
 		return cfg, nil
 	}
 
@@ -91,6 +95,9 @@ func Load() (*Config, error) {
 	}
 	if v, err := uciGet("main", "service_label"); err == nil && v != "" {
 		cfg.ServiceLabel = v
+	}
+	if v, err := uciGet("main", "auto_restart"); err == nil {
+		cfg.AutoRestart = ParseBool(v)
 	}
 	if v, err := uciGet("main", "state_path"); err == nil && v != "" {
 		cfg.StatePath = v

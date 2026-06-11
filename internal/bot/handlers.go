@@ -50,13 +50,6 @@ func (a *App) sendStartCheck(ctx context.Context, b *tgbot.Bot, chatID int64) {
 		Text:        text,
 		ReplyMarkup: a.mainMenuKeyboard(),
 	})
-	if kb := a.staleKeyboard(); kb != nil {
-		_, _ = b.SendMessage(ctx, &tgbot.SendMessageParams{
-			ChatID:      chatID,
-			Text:        "Доступны действия по сервису:",
-			ReplyMarkup: kb,
-		})
-	}
 }
 
 func (a *App) welcomeText() string {
@@ -74,36 +67,8 @@ func (a *App) welcomeText() string {
 	return text
 }
 
-func (a *App) staleKeyboard() *models.InlineKeyboardMarkup {
-	rows := make([][]models.InlineKeyboardButton, 0, 2)
-	if row := a.restartButtonRow(); row != nil {
-		rows = append(rows, row)
-	}
-	if row := a.integrationButtonRow(); row != nil {
-		rows = append(rows, row)
-	}
-	if len(rows) > 0 {
-		return &models.InlineKeyboardMarkup{InlineKeyboard: rows}
-	}
-	return nil
-}
-
-func (a *App) restartButtonRow() []models.InlineKeyboardButton {
-	st, _ := a.svc.Load()
-	if st == nil || !st.ServiceStale || a.cfg.RestartCmd == "" {
-		return nil
-	}
-	label := "Перезапустить " + a.cfg.ServiceLabel
-	id := a.sess.Create(0, ActionRestart, 0, "", nil)
-	return []models.InlineKeyboardButton{{Text: label, CallbackData: cbPrefix + id}}
-}
-
-func (a *App) integrationButtonRow() []models.InlineKeyboardButton {
-	if !isPodkopCommand(a.cfg.RestartCmd) {
-		return nil
-	}
-	id := a.sess.Create(0, ActionCheckIntegration, 0, "", nil)
-	return []models.InlineKeyboardButton{{Text: "Проверить интеграцию Podkop", CallbackData: cbPrefix + id}}
+func (a *App) menuBtnRestart() string {
+	return "Перезапустить " + a.cfg.ServiceLabel
 }
 
 func (a *App) restartHiddenReason() string {
@@ -123,13 +88,24 @@ func (a *App) restartHiddenReason() string {
 }
 
 func (a *App) mainMenuKeyboard() *models.ReplyKeyboardMarkup {
-	return &models.ReplyKeyboardMarkup{
-		Keyboard: [][]models.KeyboardButton{
-			{
-				{Text: menuBtnDownloadIP},
-				{Text: menuBtnDownloadDomains},
-			},
+	rows := [][]models.KeyboardButton{
+		{
+			{Text: menuBtnDownloadIP},
+			{Text: menuBtnDownloadDomains},
 		},
+		{
+			{Text: menuBtnViewIP},
+			{Text: menuBtnViewDomains},
+		},
+	}
+	if a.cfg.RestartCmd != "" {
+		rows = append(rows, []models.KeyboardButton{{Text: a.menuBtnRestart()}})
+	}
+	if isPodkopCommand(a.cfg.RestartCmd) {
+		rows = append(rows, []models.KeyboardButton{{Text: menuBtnCheckPodkop}})
+	}
+	return &models.ReplyKeyboardMarkup{
+		Keyboard:              rows,
 		ResizeKeyboard:        true,
 		IsPersistent:          true,
 		InputFieldPlaceholder: "Введите домены/IP через запятую или с новой строки",
@@ -146,7 +122,24 @@ func (a *App) handleMenuAction(ctx context.Context, b *tgbot.Bot, chatID int64, 
 		a.logf(chatID, "menu download_domains")
 		a.sendListFile(ctx, b, chatID, a.cfg.DomainList, "domain_list.lst", "список доменов")
 		return true
+	case strings.ToLower(menuBtnViewIP):
+		a.logf(chatID, "menu view_ip")
+		a.sendListContent(ctx, b, chatID, a.cfg.IPList, "IP-список")
+		return true
+	case strings.ToLower(menuBtnViewDomains):
+		a.logf(chatID, "menu view_domains")
+		a.sendListContent(ctx, b, chatID, a.cfg.DomainList, "список доменов")
+		return true
+	case strings.ToLower(menuBtnCheckPodkop):
+		a.logf(chatID, "menu check_podkop")
+		a.sendPodkopIntegrationCheck(ctx, b, chatID)
+		return true
 	default:
+		if a.cfg.RestartCmd != "" && strings.EqualFold(strings.TrimSpace(text), a.menuBtnRestart()) {
+			a.logf(chatID, "menu restart")
+			a.runRestartNotify(ctx, b, chatID)
+			return true
+		}
 		return false
 	}
 }
@@ -185,6 +178,61 @@ func (a *App) sendListFile(ctx context.Context, b *tgbot.Bot, chatID int64, path
 		return
 	}
 	a.logf(chatID, "download_file_sent label=%q path=%q", label, path)
+}
+
+func (a *App) sendListContent(ctx context.Context, b *tgbot.Bot, chatID int64, path, label string) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		a.logf(chatID, "view_file_error label=%q path=%q err=%v", label, path, err)
+		_, _ = b.SendMessage(ctx, &tgbot.SendMessageParams{
+			ChatID: chatID,
+			Text:   fmt.Sprintf("Не удалось открыть %s (%s): %v", label, path, err),
+		})
+		return
+	}
+
+	content := strings.TrimRight(string(data), "\r\n")
+	header := fmt.Sprintf("%s (%s):", label, path)
+	if content == "" {
+		a.sendLongText(ctx, b, chatID, header+"\n\nФайл пуст.")
+		a.logf(chatID, "view_file_sent label=%q path=%q empty=true", label, path)
+		return
+	}
+
+	a.sendLongText(ctx, b, chatID, header+"\n\n"+content)
+	a.logf(chatID, "view_file_sent label=%q path=%q bytes=%d", label, path, len(data))
+}
+
+func (a *App) sendLongText(ctx context.Context, b *tgbot.Bot, chatID int64, text string) {
+	for text != "" {
+		chunk := text
+		if len(chunk) > tgMaxMessageLen {
+			chunk = text[:tgMaxMessageLen]
+			if i := strings.LastIndex(chunk, "\n"); i > tgMaxMessageLen/2 {
+				chunk = text[:i+1]
+			}
+		}
+		_, _ = b.SendMessage(ctx, &tgbot.SendMessageParams{
+			ChatID: chatID,
+			Text:   chunk,
+		})
+		text = text[len(chunk):]
+	}
+}
+
+func (a *App) sendPodkopIntegrationCheck(ctx context.Context, b *tgbot.Bot, chatID int64) {
+	text, ok := a.podkopIntegrationText(ctx)
+	if !ok {
+		_, _ = b.SendMessage(ctx, &tgbot.SendMessageParams{
+			ChatID: chatID,
+			Text:   "Проверка интеграции доступна только для podkop.",
+		})
+		return
+	}
+	_, _ = b.SendMessage(ctx, &tgbot.SendMessageParams{
+		ChatID: chatID,
+		Text:   text,
+	})
 }
 
 func (a *App) handleListInput(ctx context.Context, b *tgbot.Bot, update *models.Update) {
@@ -228,12 +276,6 @@ func (a *App) handleListInput(ctx context.Context, b *tgbot.Bot, update *models.
 			{Text: "Отключить", CallbackData: cbPrefix + opID + ":dis"},
 			{Text: "Отмена", CallbackData: cbPrefix + opID + ":cancel"},
 		},
-	}
-	if rk := a.restartButtonRow(); rk != nil {
-		rows = append(rows, rk)
-	}
-	if ik := a.integrationButtonRow(); ik != nil {
-		rows = append(rows, ik)
 	}
 	kb := &models.InlineKeyboardMarkup{InlineKeyboard: rows}
 
@@ -316,11 +358,6 @@ func (a *App) handleCallback(ctx context.Context, b *tgbot.Bot, update *models.U
 	case ActionStartRetry:
 		a.sess.Delete(opID)
 		a.sendStartCheck(ctx, b, chatID)
-	case ActionRestart:
-		a.handleRestart(ctx, b, update, opID)
-	case ActionCheckIntegration:
-		a.sess.Delete(opID)
-		a.handleCheckIntegration(ctx, b, update)
 	default:
 		_, _ = b.AnswerCallbackQuery(ctx, &tgbot.AnswerCallbackQueryParams{
 			CallbackQueryID: update.CallbackQuery.ID,
@@ -376,8 +413,7 @@ func (a *App) handleAdd(ctx context.Context, b *tgbot.Bot, update *models.Update
 	}
 	a.logf(op.ChatID, "add success new_count=%d path=%q", len(newVals), op.ListPath)
 	a.sess.Delete(op.ID)
-	_ = a.svc.MarkFilesChanged()
-	a.answerAndEdit(ctx, b, update, fmt.Sprintf("Добавлено (%d):\n%s", len(newVals), lists.FormatList(newVals)))
+	a.afterAddSuccess(ctx, b, update, op.ChatID, fmt.Sprintf("Добавлено (%d):\n%s", len(newVals), lists.FormatList(newVals)))
 }
 
 func (a *App) execAddAll(ctx context.Context, b *tgbot.Bot, update *models.Update, op *PendingOp) {
@@ -388,8 +424,7 @@ func (a *App) execAddAll(ctx context.Context, b *tgbot.Bot, update *models.Updat
 	}
 	a.logf(op.ChatID, "add_all success count=%d path=%q", len(op.Values), op.ListPath)
 	a.sess.Delete(op.ID)
-	_ = a.svc.MarkFilesChanged()
-	a.answerAndEdit(ctx, b, update, "Записи добавлены/включены.")
+	a.afterAddSuccess(ctx, b, update, op.ChatID, "Записи добавлены/включены.")
 }
 
 func (a *App) execAddNew(ctx context.Context, b *tgbot.Bot, update *models.Update, op *PendingOp) {
@@ -400,8 +435,7 @@ func (a *App) execAddNew(ctx context.Context, b *tgbot.Bot, update *models.Updat
 	}
 	a.logf(op.ChatID, "add_new success count=%d path=%q", len(op.Values), op.ListPath)
 	a.sess.Delete(op.ID)
-	_ = a.svc.MarkFilesChanged()
-	a.answerAndEdit(ctx, b, update, "Новые записи добавлены.")
+	a.afterAddSuccess(ctx, b, update, op.ChatID, "Новые записи добавлены.")
 }
 
 func (a *App) handleDelete(ctx context.Context, b *tgbot.Bot, update *models.Update, op *PendingOp) {
@@ -501,32 +535,37 @@ func (a *App) handleStartCreate(ctx context.Context, b *tgbot.Bot, update *model
 	a.answerAndEdit(ctx, b, update, a.welcomeText())
 }
 
-func (a *App) handleRestart(ctx context.Context, b *tgbot.Bot, update *models.Update, opID string) {
+func (a *App) afterAddSuccess(ctx context.Context, b *tgbot.Bot, update *models.Update, chatID int64, msg string) {
+	_ = a.svc.MarkFilesChanged()
+	a.answerAndEdit(ctx, b, update, msg)
+	if a.cfg.AutoRestart && a.cfg.RestartCmd != "" {
+		go a.runRestartNotify(context.Background(), b, chatID)
+	}
+}
+
+func (a *App) runRestartNotify(parentCtx context.Context, b *tgbot.Bot, chatID int64) {
 	if a.cfg.RestartCmd == "" {
-		a.logf(update.CallbackQuery.Message.Message.Chat.ID, "restart skipped reason=restart_cmd_empty")
-		a.answerAndEdit(ctx, b, update, "Команда перезапуска не настроена.")
+		a.logf(chatID, "restart skipped reason=restart_cmd_empty")
+		_, _ = b.SendMessage(parentCtx, &tgbot.SendMessageParams{
+			ChatID: chatID,
+			Text:   "Команда перезапуска не настроена.",
+		})
 		return
 	}
 
-	chatID := update.CallbackQuery.Message.Message.Chat.ID
-	messageID := update.CallbackQuery.Message.Message.ID
-
-	_, _ = b.AnswerCallbackQuery(ctx, &tgbot.AnswerCallbackQueryParams{
-		CallbackQueryID: update.CallbackQuery.ID,
-	})
-
-	a.sess.Delete(opID)
 	label := a.cfg.ServiceLabel
-	a.logf(chatID, "restart started label=%q cmd=%q", label, a.cfg.RestartCmd)
+	a.logf(chatID, "restart started label=%q cmd=%q auto=%t", label, a.cfg.RestartCmd, a.cfg.AutoRestart)
 
-	_, _ = b.EditMessageText(ctx, &tgbot.EditMessageTextParams{
-		ChatID:    chatID,
-		MessageID: messageID,
-		Text:      fmt.Sprintf("Перезапуск %s…", label),
+	sent, err := b.SendMessage(parentCtx, &tgbot.SendMessageParams{
+		ChatID: chatID,
+		Text:   fmt.Sprintf("Перезапуск %s…", label),
 	})
+	if err != nil {
+		a.logf(chatID, "restart status_message_error err=%v", err)
+		return
+	}
+	messageID := sent.ID
 
-	// Callback context can be short-lived; run restart in detached context
-	// so the command is not cancelled right after handler returns.
 	rctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
@@ -539,12 +578,30 @@ func (a *App) handleRestart(ctx context.Context, b *tgbot.Bot, update *models.Up
 		})
 	})
 
+	text := a.formatRestartResult(rctx, chatID, res, label, int(time.Since(start).Seconds()))
 	if res.Success {
 		_ = a.svc.MarkRestarted()
 		a.logf(chatID, "restart success duration_sec=%d", int(time.Since(start).Seconds()))
-		text := fmt.Sprintf("✅ %s перезапущен (%ds).", label, int(time.Since(start).Seconds()))
+	} else {
+		errText := "неизвестная ошибка"
+		if res.Err != nil {
+			errText = res.Err.Error()
+		}
+		a.logf(chatID, "restart failed err=%q", errText)
+	}
+
+	_, _ = b.EditMessageText(rctx, &tgbot.EditMessageTextParams{
+		ChatID:    chatID,
+		MessageID: messageID,
+		Text:      text,
+	})
+}
+
+func (a *App) formatRestartResult(ctx context.Context, chatID int64, res service.RestartResult, label string, durationSec int) string {
+	if res.Success {
+		text := fmt.Sprintf("✅ %s перезапущен (%ds).", label, durationSec)
 		if isPodkopCommand(a.cfg.RestartCmd) {
-			bindings, err := service.CheckPodkopBindings(rctx, a.cfg.DomainList, a.cfg.IPList)
+			bindings, err := service.CheckPodkopBindings(ctx, a.cfg.DomainList, a.cfg.IPList)
 			if err != nil {
 				a.logf(chatID, "podkop_binding_check_error err=%v", err)
 			} else if !bindings.DomainBound || !bindings.IPBound {
@@ -563,43 +620,31 @@ func (a *App) handleRestart(ctx context.Context, b *tgbot.Bot, update *models.Up
 		if res.Output != "" {
 			text += "\n\n" + strings.TrimSpace(res.Output)
 		}
-		_, _ = b.EditMessageText(rctx, &tgbot.EditMessageTextParams{
-			ChatID:    chatID,
-			MessageID: messageID,
-			Text:      text,
-		})
-		return
+		return text
 	}
 
 	errText := "неизвестная ошибка"
 	if res.Err != nil {
 		errText = res.Err.Error()
 	}
-	a.logf(chatID, "restart failed err=%q", errText)
 	text := fmt.Sprintf("❌ Ошибка перезапуска %s: %s", label, errText)
 	if res.Output != "" {
 		text += "\n\n" + strings.TrimSpace(res.Output)
 	}
-	_, _ = b.EditMessageText(rctx, &tgbot.EditMessageTextParams{
-		ChatID:    chatID,
-		MessageID: messageID,
-		Text:      text,
-	})
+	return text
 }
 
 func isPodkopCommand(cmd string) bool {
 	return strings.Contains(strings.ToLower(cmd), "podkop")
 }
 
-func (a *App) handleCheckIntegration(ctx context.Context, b *tgbot.Bot, update *models.Update) {
+func (a *App) podkopIntegrationText(ctx context.Context) (string, bool) {
 	if !isPodkopCommand(a.cfg.RestartCmd) {
-		a.answerAndEdit(ctx, b, update, "Проверка интеграции доступна только для podkop.")
-		return
+		return "", false
 	}
 	st, err := service.CheckPodkopBindings(ctx, a.cfg.DomainList, a.cfg.IPList)
 	if err != nil {
-		a.answerAndEdit(ctx, b, update, "Не удалось проверить интеграцию Podkop: "+err.Error())
-		return
+		return "Не удалось проверить интеграцию Podkop: " + err.Error(), true
 	}
 
 	domainLine := "❌ не подключен"
@@ -619,8 +664,7 @@ func (a *App) handleCheckIntegration(ctx context.Context, b *tgbot.Bot, update *
 			"• " + a.cfg.DomainList + "\n" +
 			"• " + a.cfg.IPList
 	}
-
-	a.answerAndEdit(ctx, b, update, text)
+	return text, true
 }
 
 func (a *App) answerAndEdit(ctx context.Context, b *tgbot.Bot, update *models.Update, text string) {
@@ -643,20 +687,6 @@ func (a *App) answerAndEditMarkup(ctx context.Context, b *tgbot.Bot, update *mod
 		ChatID:    update.CallbackQuery.Message.Message.Chat.ID,
 		MessageID: update.CallbackQuery.Message.Message.ID,
 		Text:      text,
-	}
-	if rk := a.restartButtonRow(); rk != nil {
-		if kb == nil {
-			kb = &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{rk}}
-		} else {
-			kb.InlineKeyboard = append(kb.InlineKeyboard, rk)
-		}
-	}
-	if ik := a.integrationButtonRow(); ik != nil {
-		if kb == nil {
-			kb = &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{ik}}
-		} else {
-			kb.InlineKeyboard = append(kb.InlineKeyboard, ik)
-		}
 	}
 	if kb != nil {
 		params.ReplyMarkup = kb

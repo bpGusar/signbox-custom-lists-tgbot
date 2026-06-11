@@ -21,8 +21,6 @@ const (
 	ActionDisableAddMissing
 	ActionStartCreate
 	ActionStartRetry
-	ActionRestart
-	ActionCheckIntegration
 )
 
 type PendingOp struct {
