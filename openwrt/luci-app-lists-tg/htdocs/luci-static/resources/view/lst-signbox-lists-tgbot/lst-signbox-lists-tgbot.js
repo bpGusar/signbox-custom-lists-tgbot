@@ -5,13 +5,13 @@
 
 return view.extend({
 	load: function () {
-		return uci.load('lists-tg');
+		return uci.load('lst-signbox-lists-tgbot');
 	},
 
 	render: function () {
 		var m, s, o;
 
-		m = new form.Map('lists-tg', _('Lists Telegram Bot'), _(
+		m = new form.Map('lst-signbox-lists-tgbot', _('Lists Telegram Bot'), _(
 			'Telegram bot for managing domain and IP/CIDR list files.'
 		));
 
@@ -27,11 +27,11 @@ return view.extend({
 		o.rmempty = false;
 
 		o = s.option(form.Value, 'domain_list', _('Domain list file'));
-		o.default = '/etc/lists-tg/domain_list.lst';
+		o.default = '/etc/lst-signbox-lists-tgbot/domain_list.lst';
 		o.rmempty = false;
 
 		o = s.option(form.Value, 'ip_list', _('IP/CIDR list file'));
-		o.default = '/etc/lists-tg/ip_list.lst';
+		o.default = '/etc/lst-signbox-lists-tgbot/ip_list.lst';
 		o.rmempty = false;
 
 		return m.render();

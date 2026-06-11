@@ -9,9 +9,9 @@ import (
 	tgbot "github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
 
-	"lists-tg/internal/config"
-	"lists-tg/internal/lists"
-	"lists-tg/internal/service"
+	"lst-signbox-lists-tgbot/internal/config"
+	"lst-signbox-lists-tgbot/internal/lists"
+	"lst-signbox-lists-tgbot/internal/service"
 )
 
 type App struct {
@@ -23,7 +23,7 @@ type App struct {
 
 func Run(ctx context.Context, cfg *config.Config) error {
 	if !cfg.Enabled {
-		log.Println("lists-tg disabled in config")
+		log.Println("lst-signbox-lists-tgbot disabled in config")
 		select {}
 	}
 	if cfg.Token == "" {
@@ -50,7 +50,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	b.RegisterHandler(tgbot.HandlerTypeMessageText, "/start", tgbot.MatchTypePrefix, app.handleStart)
 	b.RegisterHandler(tgbot.HandlerTypeCallbackQueryData, "s:", tgbot.MatchTypePrefix, app.handleCallback)
 
-	log.Println("lists-tg started")
+	log.Println("lst-signbox-lists-tgbot started")
 	b.Start(ctx)
 	return nil
 }

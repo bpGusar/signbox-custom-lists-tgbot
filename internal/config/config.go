@@ -9,11 +9,11 @@ import (
 )
 
 const (
-	uciPackage     = "lists-tg"
-	defaultDomain  = "/etc/lists-tg/domain_list.lst"
-	defaultIP      = "/etc/lists-tg/ip_list.lst"
+	uciPackage     = "lst-signbox-lists-tgbot"
+	defaultDomain  = "/etc/lst-signbox-lists-tgbot/domain_list.lst"
+	defaultIP      = "/etc/lst-signbox-lists-tgbot/ip_list.lst"
 	defaultLabel   = "сервис"
-	defaultState   = "/var/lib/lists-tg/state.json"
+	defaultState   = "/var/lib/lst-signbox-lists-tgbot/state.json"
 )
 
 type Config struct {
@@ -35,24 +35,28 @@ func Load() (*Config, error) {
 		StatePath:    defaultState,
 	}
 
-	if token := os.Getenv("LISTS_TG_TOKEN"); token != "" {
+	token := os.Getenv("LST_SIGNBOX_LISTS_TGBOT_TOKEN")
+	if token == "" {
+		token = os.Getenv("LISTS_TG_TOKEN")
+	}
+	if token != "" {
 		cfg.Token = token
-		if v := os.Getenv("LISTS_TG_DOMAIN_LIST"); v != "" {
+		if v := getenvAny("LST_SIGNBOX_LISTS_TGBOT_DOMAIN_LIST", "LISTS_TG_DOMAIN_LIST"); v != "" {
 			cfg.DomainList = v
 		}
-		if v := os.Getenv("LISTS_TG_IP_LIST"); v != "" {
+		if v := getenvAny("LST_SIGNBOX_LISTS_TGBOT_IP_LIST", "LISTS_TG_IP_LIST"); v != "" {
 			cfg.IPList = v
 		}
-		if v := os.Getenv("LISTS_TG_RESTART_CMD"); v != "" {
+		if v := getenvAny("LST_SIGNBOX_LISTS_TGBOT_RESTART_CMD", "LISTS_TG_RESTART_CMD"); v != "" {
 			cfg.RestartCmd = v
 		}
-		if v := os.Getenv("LISTS_TG_SERVICE_LABEL"); v != "" {
+		if v := getenvAny("LST_SIGNBOX_LISTS_TGBOT_SERVICE_LABEL", "LISTS_TG_SERVICE_LABEL"); v != "" {
 			cfg.ServiceLabel = v
 		}
-		if v := os.Getenv("LISTS_TG_STATE_PATH"); v != "" {
+		if v := getenvAny("LST_SIGNBOX_LISTS_TGBOT_STATE_PATH", "LISTS_TG_STATE_PATH"); v != "" {
 			cfg.StatePath = v
 		}
-		if v := os.Getenv("LISTS_TG_ENABLED"); v != "" {
+		if v := getenvAny("LST_SIGNBOX_LISTS_TGBOT_ENABLED", "LISTS_TG_ENABLED"); v != "" {
 			cfg.Enabled = v == "1" || strings.EqualFold(v, "true")
 		}
 		return cfg, nil
@@ -63,7 +67,7 @@ func Load() (*Config, error) {
 		cfg.Enabled = enabled == "1"
 	}
 
-	token, err := uciGet("main", "token")
+	token, err = uciGet("main", "token")
 	if err != nil {
 		return nil, fmt.Errorf("read token from UCI: %w", err)
 	}
@@ -99,4 +103,13 @@ func uciGet(section, option string) (string, error) {
 func ParseBool(s string) bool {
 	b, _ := strconv.ParseBool(s)
 	return b || s == "1"
+}
+
+func getenvAny(names ...string) string {
+	for _, n := range names {
+		if v := os.Getenv(n); v != "" {
+			return v
+		}
+	}
+	return ""
 }

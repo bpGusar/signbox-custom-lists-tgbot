@@ -1,0 +1,14 @@
+{
+  "admin/services/lst-signbox-lists-tgbot": {
+    "title": "Lists Telegram Bot",
+    "order": 90,
+    "action": {
+      "type": "view",
+      "path": "lst-signbox-lists-tgbot/lst-signbox-lists-tgbot"
+    },
+    "depends": {
+      "acl": ["luci-app-lst-signbox-lists-tgbot"],
+      "uci": { "lst-signbox-lists-tgbot": true }
+    }
+  }
+}

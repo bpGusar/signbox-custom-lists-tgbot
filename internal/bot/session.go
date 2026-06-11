@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"lists-tg/internal/lists"
+	"lst-signbox-lists-tgbot/internal/lists"
 )
 
 type ActionKind int

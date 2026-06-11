@@ -8,8 +8,8 @@ def main() -> None:
     with open(path) as f:
         data = json.load(f)
     data["version"] = f"{version}-r{release}"
-    data["packages"]["lists-tg"] = f"lists-tg_{version}-r{release}_${{ARCH}}.ipk"
-    data["packages"]["luci-app-lists-tg"] = f"luci-app-lists-tg_{version}-r{release}_all.ipk"
+    data["packages"]["lst-signbox-lists-tgbot"] = f"lst-signbox-lists-tgbot_{version}-r{release}_${{ARCH}}.ipk"
+    data["packages"]["luci-app-lst-signbox-lists-tgbot"] = f"luci-app-lst-signbox-lists-tgbot_{version}-r{release}_all.ipk"
     with open(path, "w") as f:
         json.dump(data, f, indent=2)
         f.write("\n")
