@@ -1,8 +1,8 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-lists-tg
-PKG_VERSION:=1.0.0
-PKG_RELEASE:=1
+PKG_VERSION:=$(if $(LISTS_TG_VERSION),$(LISTS_TG_VERSION),0.$(shell date -u +%Y%m%d).0)
+PKG_RELEASE:=$(if $(LISTS_TG_RELEASE),$(LISTS_TG_RELEASE),1)
 
 PKG_LICENSE:=GPL-2.0-or-later
 

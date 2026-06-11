@@ -40,13 +40,12 @@ make ipk-aarch64            # только aarch64
 TARGETS=mipsel_24kc make ipk
 ```
 
-Пакеты: `dist/ipk/<архитектура>/`. Публикация:
+Пакеты: `dist/ipk/<архитектура>/`.
 
-```bash
-git tag v1.0.0 && git push origin v1.0.0   # GitHub Actions → Release с .ipk
-```
+Версия назначается автоматически: `0.YYYYMMDD.<номер_сборки>` (например `0.20260611.42`).  
+При каждом push в `main` GitHub Actions собирает `.ipk`, создаёт Release и обновляет `dist/ipk/`.
 
-Или **Actions → Build IPK packages → Run workflow** — соберёт и закоммитит в `dist/ipk/`.
+Ручной запуск: **Actions → Build IPK packages → Run workflow**.
 
 ### 3. Настройка в LuCI
 

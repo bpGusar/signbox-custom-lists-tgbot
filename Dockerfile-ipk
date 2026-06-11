@@ -5,6 +5,8 @@
 
 ARG OPENWRT_VERSION=24.10.5
 ARG ARCH=x86_64
+ARG LISTS_TG_VERSION
+ARG LISTS_TG_RELEASE=1
 
 # --- stage 1: cross-compile Go binary ---
 FROM golang:1.22-bookworm AS gobuild
@@ -27,6 +29,8 @@ RUN set -eu; \
 
 # --- stage 2: package with OpenWrt SDK ---
 FROM openwrt/sdk:${ARCH}-${OPENWRT_VERSION}
+ARG LISTS_TG_VERSION
+ARG LISTS_TG_RELEASE=1
 
 WORKDIR /builder
 
@@ -38,4 +42,6 @@ COPY openwrt/luci-app-lists-tg ./package/feeds/luci/luci-app-lists-tg
 COPY --from=gobuild /lists-tg ./package/feeds/utils/lists-tg/files/usr/bin/lists-tg
 
 RUN make defconfig && \
-	make package/lists-tg/compile package/luci-app-lists-tg/compile V=s -j1
+	make package/lists-tg/compile package/luci-app-lists-tg/compile \
+	LISTS_TG_VERSION="${LISTS_TG_VERSION}" LISTS_TG_RELEASE="${LISTS_TG_RELEASE}" \
+	V=s -j1
