@@ -47,6 +47,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	}
 
 	b.RegisterHandler(tgbot.HandlerTypeMessageText, "/start", tgbot.MatchTypeExact, app.handleStart)
+	b.RegisterHandler(tgbot.HandlerTypeMessageText, "/start", tgbot.MatchTypePrefix, app.handleStart)
 	b.RegisterHandler(tgbot.HandlerTypeCallbackQueryData, "s:", tgbot.MatchTypePrefix, app.handleCallback)
 
 	log.Println("lists-tg started")
@@ -56,6 +57,10 @@ func Run(ctx context.Context, cfg *config.Config) error {
 
 func (a *App) defaultHandler(ctx context.Context, b *tgbot.Bot, update *models.Update) {
 	if update.Message == nil || update.Message.Text == "" {
+		return
+	}
+	if isStartCommand(update.Message.Text) {
+		a.handleStart(ctx, b, update)
 		return
 	}
 	if strings.HasPrefix(update.Message.Text, "/") {
@@ -69,6 +74,22 @@ func (a *App) defaultHandler(ctx context.Context, b *tgbot.Bot, update *models.U
 	}
 
 	a.handleListInput(ctx, b, update)
+}
+
+func isStartCommand(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return false
+	}
+	parts := strings.Fields(text)
+	if len(parts) == 0 {
+		return false
+	}
+	cmd := parts[0]
+	if cmd == "/start" {
+		return true
+	}
+	return strings.HasPrefix(cmd, "/start@")
 }
 
 func listPath(cfg *config.Config, t lists.EntryType) string {
