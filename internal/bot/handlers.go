@@ -438,6 +438,13 @@ func (a *App) answerAndEditMarkup(ctx context.Context, b *tgbot.Bot, update *mod
 		MessageID: update.CallbackQuery.Message.Message.ID,
 		Text:      text,
 	}
+	if rk := a.restartButtonRow(); rk != nil {
+		if kb == nil {
+			kb = &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{rk}}
+		} else {
+			kb.InlineKeyboard = append(kb.InlineKeyboard, rk)
+		}
+	}
 	if kb != nil {
 		params.ReplyMarkup = kb
 	}
