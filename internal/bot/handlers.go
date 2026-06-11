@@ -86,7 +86,7 @@ func (a *App) versionHeader(ctx context.Context) string {
 	rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	switch a.verChecker.Check(rctx) {
+	switch a.verChecker.CheckFresh(rctx) {
 	case version.StatusCurrent:
 		lines = append(lines, "✅ Версия актуальна")
 	case version.StatusOutdated:
@@ -314,7 +314,7 @@ func (a *App) handleListInput(ctx context.Context, b *tgbot.Bot, update *models.
 		a.logf(chatID, "list_input mixed_types count=%d", len(parsed.Valid))
 		_, _ = b.SendMessage(ctx, &tgbot.SendMessageParams{
 			ChatID: chatID,
-			Text:   "⚠️ Отправьте только домены или только IP/CIDR в одном сообщении.",
+			Text:   buildMixedInputMessage(text),
 		})
 		return
 	}
@@ -834,6 +834,12 @@ func buildListInputKeyboard(
 	canAdd := len(newVals) > 0 || len(disabled) > 0
 	canDisable := len(active) > 0 || len(newVals) > 0
 	canDelete := len(active) > 0 || len(disabled) > 0
+	addLabel := "➕ Добавить"
+	if len(newVals) == 0 && len(disabled) > 0 {
+		addLabel = "✅ Включить"
+	} else if len(newVals) > 0 && len(disabled) > 0 {
+		addLabel = "➕ Добавить/включить"
+	}
 
 	var rows [][]models.InlineKeyboardButton
 	hasActions := false
@@ -841,7 +847,7 @@ func buildListInputKeyboard(
 	var topRow []models.InlineKeyboardButton
 	if canAdd {
 		topRow = append(topRow, models.InlineKeyboardButton{
-			Text: "➕ Добавить", CallbackData: cbPrefix + opID + ":add",
+			Text: addLabel, CallbackData: cbPrefix + opID + ":add",
 		})
 		hasActions = true
 	}
@@ -866,6 +872,41 @@ func buildListInputKeyboard(
 	rows = append(rows, bottomRow)
 
 	return rows, hasActions
+}
+
+func buildMixedInputMessage(text string) string {
+	var domains []string
+	var ips []string
+
+	for _, token := range lists.SplitInput(text) {
+		switch lists.ClassifyToken(token) {
+		case lists.TypeDomain:
+			domains = append(domains, token)
+		case lists.TypeIP:
+			ips = append(ips, token)
+		}
+	}
+
+	var sb strings.Builder
+	sb.WriteString("⚠️ В одном сообщении смешаны разные типы записей.")
+	if len(domains) > 0 {
+		sb.WriteString("\n\n🌐 Домены:\n")
+		sb.WriteString(lists.FormatList(domains))
+	}
+	if len(ips) > 0 {
+		sb.WriteString("\n\n🧩 IP/CIDR:\n")
+		sb.WriteString(lists.FormatList(ips))
+	}
+	sb.WriteString("\n\nОтправьте их отдельно:\n")
+	if len(domains) > 0 {
+		sb.WriteString("• сначала только домены\n")
+	}
+	if len(ips) > 0 {
+		sb.WriteString("• потом только IP/CIDR\n")
+	}
+	sb.WriteString("После каждого сообщения бот предложит подходящие действия.")
+
+	return strings.TrimRight(sb.String(), "\n")
 }
 
 func (a *App) answerAndEditMarkup(ctx context.Context, b *tgbot.Bot, update *models.Update, text string, kb *models.InlineKeyboardMarkup) {

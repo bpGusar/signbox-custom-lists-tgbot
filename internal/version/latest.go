@@ -53,7 +53,18 @@ func (c *Checker) Check(ctx context.Context) Status {
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.statusLocked()
+}
 
+// CheckFresh always fetches the latest release version from GitHub.
+func (c *Checker) CheckFresh(ctx context.Context) Status {
+	c.refresh(ctx)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.statusLocked()
+}
+
+func (c *Checker) statusLocked() Status {
 	if c.latest == "" {
 		return StatusUnknown
 	}
