@@ -22,8 +22,12 @@ type App struct {
 }
 
 const (
-	menuBtnDownloadIP      = "Скачать файл IP"
-	menuBtnDownloadDomains = "Скачать файл доменов"
+	menuBtnDownloadIP       = "Скачать файл IP"
+	menuBtnDownloadDomains  = "Скачать файл доменов"
+	menuBtnViewIP           = "Показать файл IP"
+	menuBtnViewDomains      = "Показать файл доменов"
+	menuBtnCheckPodkop      = "Проверить интеграцию Podkop"
+	tgMaxMessageLen         = 4096
 )
 
 func Run(ctx context.Context, cfg *config.Config) error {
@@ -42,8 +46,8 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		ready: make(map[int64]bool),
 	}
 	log.Printf(
-		"lst-signbox-lists-tgbot init: domain_list=%s ip_list=%s restart_cmd_set=%t state_path=%s",
-		cfg.DomainList, cfg.IPList, cfg.RestartCmd != "", cfg.StatePath,
+		"lst-signbox-lists-tgbot init: domain_list=%s ip_list=%s restart_cmd_set=%t auto_restart=%t state_path=%s",
+		cfg.DomainList, cfg.IPList, cfg.RestartCmd != "", cfg.AutoRestart, cfg.StatePath,
 	)
 
 	opts := []tgbot.Option{
