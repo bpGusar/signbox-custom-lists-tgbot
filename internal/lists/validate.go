@@ -56,31 +56,23 @@ func IsIPOrCIDR(s string) bool {
 	return ip.To4() != nil
 }
 
-type inputToken struct {
-	value    string
-	disabled bool
-}
-
-func splitInputTokens(text string) []inputToken {
+func splitInputTokens(text string) []string {
 	text = strings.ReplaceAll(text, "\r", "")
 	lines := strings.Split(text, "\n")
 	if len(lines) == 1 {
 		lines = []string{text}
 	}
 
-	seen := make(map[string]int)
-	var out []inputToken
+	seen := make(map[string]struct{})
+	var out []string
 
-	add := func(value string, disabled bool) {
+	add := func(value string) {
 		key := strings.ToLower(value)
-		if i, ok := seen[key]; ok {
-			if disabled {
-				out[i].disabled = true
-			}
+		if _, ok := seen[key]; ok {
 			return
 		}
-		seen[key] = len(out)
-		out = append(out, inputToken{value: value, disabled: disabled})
+		seen[key] = struct{}{}
+		out = append(out, value)
 	}
 
 	for _, line := range lines {
@@ -93,36 +85,28 @@ func splitInputTokens(text string) []inputToken {
 			if part == "" {
 				continue
 			}
-			disabled := false
 			if strings.HasPrefix(part, "//") {
-				disabled = true
 				part = strings.TrimSpace(strings.TrimPrefix(part, "//"))
 				if part == "" {
 					continue
 				}
 			}
-			add(part, disabled)
+			add(part)
 		}
 	}
 	return out
 }
 
 func SplitInput(text string) []string {
-	tokens := splitInputTokens(text)
-	out := make([]string, 0, len(tokens))
-	for _, t := range tokens {
-		out = append(out, t.value)
-	}
-	return out
+	return splitInputTokens(text)
 }
 
 type ParseResult struct {
-	Type      EntryType
-	Valid     []string
-	ToDisable []string
-	Invalid   []string
-	Mixed     bool
-	Empty     bool
+	Type    EntryType
+	Valid   []string
+	Invalid []string
+	Mixed   bool
+	Empty   bool
 }
 
 func ParseInput(text string) ParseResult {
@@ -134,10 +118,10 @@ func ParseInput(text string) ParseResult {
 	var result ParseResult
 	var firstType EntryType
 
-	for _, tok := range tokens {
-		et := ClassifyToken(tok.value)
+	for _, value := range tokens {
+		et := ClassifyToken(value)
 		if et == TypeUnknown {
-			result.Invalid = append(result.Invalid, tok.value)
+			result.Invalid = append(result.Invalid, value)
 			continue
 		}
 		if firstType == TypeUnknown {
@@ -146,18 +130,13 @@ func ParseInput(text string) ParseResult {
 		} else if et != firstType {
 			result.Mixed = true
 		}
-		if tok.disabled {
-			result.ToDisable = append(result.ToDisable, tok.value)
-		} else {
-			result.Valid = append(result.Valid, tok.value)
-		}
+		result.Valid = append(result.Valid, value)
 	}
 
 	if result.Mixed {
 		result.Valid = nil
-		result.ToDisable = nil
 	}
-	if len(result.Valid) == 0 && len(result.ToDisable) == 0 && len(result.Invalid) == 0 {
+	if len(result.Valid) == 0 && len(result.Invalid) == 0 {
 		result.Empty = true
 	}
 	return result
