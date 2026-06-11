@@ -44,8 +44,8 @@ return view.extend({
 		o.placeholder = 'podkop';
 		o.rmempty = false;
 
-		o = s.option(form.Flag, 'auto_restart', _('Restart service after adding entries'));
-		o.default = '0';
+		o = s.option(form.Flag, 'auto_restart', _('Restart service after list changes'));
+		o.default = '1';
 		o.rmempty = false;
 
 		o = s.option(form.Value, 'log_path', _('Bot log file'));
