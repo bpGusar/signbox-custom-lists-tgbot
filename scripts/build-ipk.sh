@@ -23,19 +23,7 @@ command -v docker >/dev/null 2>&1 || die "docker is required"
 update_manifest() {
 	local manifest="${ROOT}/dist/manifest.json"
 	[ -f "$manifest" ] || return 0
-	# shellcheck disable=SC2016
-	python3 - "$LISTS_TG_VERSION" "$LISTS_TG_RELEASE" "$manifest" <<'PY' 2>/dev/null || true
-import json, sys
-version, release, path = sys.argv[1], sys.argv[2], sys.argv[3]
-with open(path) as f:
-    data = json.load(f)
-data["version"] = f"{version}-r{release}"
-data["packages"]["lists-tg"] = f"lists-tg_{version}-r{release}_${{ARCH}}.ipk"
-data["packages"]["luci-app-lists-tg"] = f"luci-app-lists-tg_{version}-r{release}_all.ipk"
-with open(path, "w") as f:
-    json.dump(data, f, indent=2)
-    f.write("\n")
-PY
+	python3 "${ROOT}/scripts/update-manifest.py" "$LISTS_TG_VERSION" "$LISTS_TG_RELEASE" "$manifest" 2>/dev/null || true
 }
 
 build_arch() {
