@@ -136,7 +136,7 @@ func ParseInput(text string) ParseResult {
 	if result.Mixed {
 		result.Valid = nil
 	}
-	if len(result.Valid) == 0 && len(result.Invalid) == 0 {
+	if !result.Mixed && len(result.Valid) == 0 && len(result.Invalid) == 0 {
 		result.Empty = true
 	}
 	return result
