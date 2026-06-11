@@ -395,7 +395,11 @@ func (a *App) handleCallback(ctx context.Context, b *tgbot.Bot, update *models.U
 		case "apply":
 			a.handleApplyMixed(ctx, b, update, op)
 		case "add":
-			a.handleAdd(ctx, b, update, op)
+			a.execAddNew(ctx, b, update, op)
+		case "addall":
+			a.execAddAll(ctx, b, update, op)
+		case "en":
+			a.execEnable(ctx, b, update, op)
 		case "del":
 			vals := op.Values
 			if len(vals) == 0 {
@@ -474,57 +478,6 @@ func (a *App) handleApplyMixed(ctx context.Context, b *tgbot.Bot, update *models
 	a.afterFilesChanged(ctx, b, update, op.ChatID, strings.Join(parts, "\n\n"))
 }
 
-func (a *App) handleAdd(ctx context.Context, b *tgbot.Bot, update *models.Update, op *PendingOp) {
-	classified, err := lists.ClassifyValues(op.ListPath, op.Values)
-	if err != nil {
-		a.logf(op.ChatID, "add classify_error path=%q err=%v", op.ListPath, err)
-		a.answerAndEdit(ctx, b, update, "Ошибка чтения файла: "+err.Error())
-		return
-	}
-
-	newVals, active, disabled := lists.GroupByStatus(classified)
-
-	if len(disabled) > 0 {
-		a.logf(op.ChatID, "add requires_choice disabled=%d new=%d active=%d", len(disabled), len(newVals), len(active))
-		msg := fmt.Sprintf(
-			"Добавление (%s):\n\nБудут включены (были отключены):\n%s\n\nНовые:\n%s\n\nУже активны (пропустятся):\n%s",
-			typeLabel(op.ListType),
-			lists.FormatList(disabled),
-			lists.FormatList(newVals),
-			lists.FormatList(active),
-		)
-		allID := a.sess.Create(op.ChatID, ActionAddAll, op.ListType, op.ListPath, op.Values, nil)
-		newID := a.sess.Create(op.ChatID, ActionAddNew, op.ListType, op.ListPath, op.Values, nil)
-		a.sess.Delete(op.ID)
-
-		kb := &models.InlineKeyboardMarkup{
-			InlineKeyboard: [][]models.InlineKeyboardButton{
-				{{Text: "➕ Добавить всё", CallbackData: cbPrefix + allID + ":confirm"}},
-				{{Text: "✨ Только новые", CallbackData: cbPrefix + newID + ":confirm"}},
-				{{Text: "❌ Отмена", CallbackData: cbPrefix + allID + ":cancel"}},
-			},
-		}
-		a.answerAndEditMarkup(ctx, b, update, msg, kb)
-		return
-	}
-
-	if len(newVals) == 0 {
-		a.logf(op.ChatID, "add skipped_all_exist count=%d", len(op.Values))
-		a.sess.Delete(op.ID)
-		a.answerAndEdit(ctx, b, update, "ℹ️ Все записи уже есть в списке.")
-		return
-	}
-
-	if err := lists.AddNew(op.ListPath, op.Values); err != nil {
-		a.logf(op.ChatID, "add write_error path=%q err=%v", op.ListPath, err)
-		a.answerAndEdit(ctx, b, update, "Ошибка записи: "+err.Error())
-		return
-	}
-	a.logf(op.ChatID, "add success new_count=%d path=%q", len(newVals), op.ListPath)
-	a.sess.Delete(op.ID)
-	a.afterAddSuccess(ctx, b, update, op.ChatID, fmt.Sprintf("➕ Добавлено (%d):\n%s", len(newVals), lists.FormatList(newVals)))
-}
-
 func (a *App) execAddAll(ctx context.Context, b *tgbot.Bot, update *models.Update, op *PendingOp) {
 	if err := lists.AddAll(op.ListPath, op.Values); err != nil {
 		a.logf(op.ChatID, "add_all write_error path=%q err=%v", op.ListPath, err)
@@ -537,14 +490,53 @@ func (a *App) execAddAll(ctx context.Context, b *tgbot.Bot, update *models.Updat
 }
 
 func (a *App) execAddNew(ctx context.Context, b *tgbot.Bot, update *models.Update, op *PendingOp) {
+	classified, err := lists.ClassifyValues(op.ListPath, op.Values)
+	if err != nil {
+		a.logf(op.ChatID, "add_new classify_error path=%q err=%v", op.ListPath, err)
+		a.answerAndEdit(ctx, b, update, "Ошибка чтения файла: "+err.Error())
+		return
+	}
+	newVals, _, _ := lists.GroupByStatus(classified)
+	if len(newVals) == 0 {
+		a.logf(op.ChatID, "add_new skipped_no_new count=%d", len(op.Values))
+		a.sess.Delete(op.ID)
+		a.answerAndEdit(ctx, b, update, "ℹ️ Нет новых записей для добавления.")
+		return
+	}
+
 	if err := lists.AddNew(op.ListPath, op.Values); err != nil {
 		a.logf(op.ChatID, "add_new write_error path=%q err=%v", op.ListPath, err)
 		a.answerAndEdit(ctx, b, update, "Ошибка записи: "+err.Error())
 		return
 	}
-	a.logf(op.ChatID, "add_new success count=%d path=%q", len(op.Values), op.ListPath)
+	a.logf(op.ChatID, "add_new success new_count=%d path=%q", len(newVals), op.ListPath)
 	a.sess.Delete(op.ID)
-	a.afterAddSuccess(ctx, b, update, op.ChatID, "✨ Новые записи добавлены.")
+	a.afterAddSuccess(ctx, b, update, op.ChatID, fmt.Sprintf("➕ Добавлено (%d):\n%s", len(newVals), lists.FormatList(newVals)))
+}
+
+func (a *App) execEnable(ctx context.Context, b *tgbot.Bot, update *models.Update, op *PendingOp) {
+	classified, err := lists.ClassifyValues(op.ListPath, op.Values)
+	if err != nil {
+		a.logf(op.ChatID, "enable classify_error path=%q err=%v", op.ListPath, err)
+		a.answerAndEdit(ctx, b, update, "Ошибка чтения файла: "+err.Error())
+		return
+	}
+	_, _, disabled := lists.GroupByStatus(classified)
+	if len(disabled) == 0 {
+		a.logf(op.ChatID, "enable skipped_no_disabled count=%d", len(op.Values))
+		a.sess.Delete(op.ID)
+		a.answerAndEdit(ctx, b, update, "ℹ️ Нет отключённых записей для включения.")
+		return
+	}
+
+	if err := lists.AddAll(op.ListPath, disabled); err != nil {
+		a.logf(op.ChatID, "enable write_error path=%q err=%v", op.ListPath, err)
+		a.answerAndEdit(ctx, b, update, "Ошибка записи: "+err.Error())
+		return
+	}
+	a.logf(op.ChatID, "enable success count=%d path=%q", len(disabled), op.ListPath)
+	a.sess.Delete(op.ID)
+	a.afterAddSuccess(ctx, b, update, op.ChatID, fmt.Sprintf("✅ Включено (%d):\n%s", len(disabled), lists.FormatList(disabled)))
 }
 
 func (a *App) handleDelete(ctx context.Context, b *tgbot.Bot, update *models.Update, op *PendingOp) {
@@ -831,34 +823,43 @@ func buildListInputKeyboard(
 ) ([][]models.InlineKeyboardButton, bool) {
 	cancelBtn := models.InlineKeyboardButton{Text: "❌ Отмена", CallbackData: cbPrefix + opID + ":cancel"}
 
-	canAdd := len(newVals) > 0 || len(disabled) > 0
-	canDisable := len(active) > 0 || len(newVals) > 0
+	canAddNew := len(newVals) > 0
+	canEnable := len(disabled) > 0
+	canAddAll := len(newVals) > 0 && len(disabled) > 0
+	canDisable := len(active) > 0
 	canDelete := len(active) > 0 || len(disabled) > 0
-	addLabel := "➕ Добавить"
-	if len(newVals) == 0 && len(disabled) > 0 {
-		addLabel = "✅ Включить"
-	} else if len(newVals) > 0 && len(disabled) > 0 {
-		addLabel = "➕ Добавить/включить"
-	}
 
 	var rows [][]models.InlineKeyboardButton
 	hasActions := false
 
-	var topRow []models.InlineKeyboardButton
-	if canAdd {
-		topRow = append(topRow, models.InlineKeyboardButton{
-			Text: addLabel, CallbackData: cbPrefix + opID + ":add",
+	var addRow []models.InlineKeyboardButton
+	if canAddNew {
+		addRow = append(addRow, models.InlineKeyboardButton{
+			Text: "➕ Добавить", CallbackData: cbPrefix + opID + ":add",
 		})
 		hasActions = true
 	}
+	if canEnable {
+		addRow = append(addRow, models.InlineKeyboardButton{
+			Text: "✅ Включить", CallbackData: cbPrefix + opID + ":en",
+		})
+		hasActions = true
+	}
+	if canAddAll {
+		addRow = append(addRow, models.InlineKeyboardButton{
+			Text: "➕ Добавить всё", CallbackData: cbPrefix + opID + ":addall",
+		})
+		hasActions = true
+	}
+	if len(addRow) > 0 {
+		rows = append(rows, addRow)
+	}
+
 	if canDelete {
-		topRow = append(topRow, models.InlineKeyboardButton{
+		rows = append(rows, []models.InlineKeyboardButton{{
 			Text: "🗑 Удалить", CallbackData: cbPrefix + opID + ":del",
-		})
+		}})
 		hasActions = true
-	}
-	if len(topRow) > 0 {
-		rows = append(rows, topRow)
 	}
 
 	var bottomRow []models.InlineKeyboardButton
