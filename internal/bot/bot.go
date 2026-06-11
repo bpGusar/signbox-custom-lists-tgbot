@@ -54,7 +54,6 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		"lst-signbox-lists-tgbot init: version=%s domain_list=%s ip_list=%s restart_cmd_set=%t auto_restart=%t state_path=%s",
 		version.Display(), cfg.DomainList, cfg.IPList, cfg.RestartCmd != "", cfg.AutoRestart, cfg.StatePath,
 	)
-	go verChecker.Refresh(context.Background())
 
 	opts := []tgbot.Option{
 		tgbot.WithDefaultHandler(app.defaultHandler),
