@@ -1,0 +1,8 @@
+config main 'main'
+	option enabled '1'
+	option token ''
+	option domain_list '/etc/lists-tg/domain_list.lst'
+	option ip_list '/etc/lists-tg/ip_list.lst'
+	option restart_cmd ''
+	option service_label 'сервис'
+	option state_path '/var/lib/lists-tg/state.json'

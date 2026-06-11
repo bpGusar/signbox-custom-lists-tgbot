@@ -1,0 +1,75 @@
+package lists
+
+import "testing"
+
+func TestParseInputDomains(t *testing.T) {
+	r := ParseInput("test.com, example.org")
+	if r.Mixed || len(r.Invalid) > 0 || r.Type != TypeDomain {
+		t.Fatalf("unexpected: %+v", r)
+	}
+	if len(r.Valid) != 2 {
+		t.Fatalf("want 2 valid, got %d", len(r.Valid))
+	}
+}
+
+func TestParseInputIP(t *testing.T) {
+	r := ParseInput("1.1.1.1, 10.0.0.0/8")
+	if r.Type != TypeIP || len(r.Valid) != 2 {
+		t.Fatalf("unexpected: %+v", r)
+	}
+}
+
+func TestParseInputMixed(t *testing.T) {
+	r := ParseInput("test.com, 1.1.1.1")
+	if !r.Mixed {
+		t.Fatal("expected mixed")
+	}
+}
+
+func TestAddDisableDelete(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/list.lst"
+
+	if err := AddNew(path, []string{"a.com", "b.com"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := DisableExistingOnly(path, []string{"a.com"}); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 || !entries[0].Disabled || entries[1].Disabled {
+		t.Fatalf("unexpected entries: %+v", entries)
+	}
+
+	classified, err := ClassifyValues(path, []string{"a.com", "c.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	newV, active, disabled := GroupByStatus(classified)
+	if len(disabled) != 1 || len(newV) != 1 || len(active) != 0 {
+		t.Fatalf("classified wrong: new=%v active=%v dis=%v", newV, active, disabled)
+	}
+
+	if err := AddAll(path, []string{"a.com", "c.com"}); err != nil {
+		t.Fatal(err)
+	}
+	entries, _ = ReadFile(path)
+	if len(entries) != 3 {
+		t.Fatalf("want 3 entries, got %d", len(entries))
+	}
+	if entries[0].Disabled || entries[0].Value != "a.com" {
+		t.Fatalf("a.com should be enabled: %+v", entries[0])
+	}
+
+	if err := Delete(path, []string{"b.com"}); err != nil {
+		t.Fatal(err)
+	}
+	entries, _ = ReadFile(path)
+	if len(entries) != 2 {
+		t.Fatalf("want 2 after delete, got %d", len(entries))
+	}
+}

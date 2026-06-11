@@ -1,0 +1,41 @@
+# Build lists-tg and luci-app-lists-tg .ipk packages.
+# Go binary is cross-compiled in stage 1, OpenWrt SDK only packages files.
+#
+#   docker build -f Dockerfile-ipk --build-arg ARCH=aarch64_cortex-a53 -t lists-tg-ipk .
+
+ARG OPENWRT_VERSION=24.10.5
+ARG ARCH=x86_64
+
+# --- stage 1: cross-compile Go binary ---
+FROM golang:1.22-bookworm AS gobuild
+ARG ARCH
+
+WORKDIR /src
+COPY go.mod go.sum ./
+COPY cmd ./cmd
+COPY internal ./internal
+
+RUN set -eu; \
+	case "$ARCH" in \
+		aarch64*)  export GOARCH=arm64 ;; \
+		arm*)      export GOARCH=arm GOARM=7 ;; \
+		mipsel*)   export GOARCH=mipsle GOMIPS=softfloat ;; \
+		x86_64)    export GOARCH=amd64 ;; \
+		*) echo "unsupported ARCH: $ARCH"; exit 1 ;; \
+	esac; \
+	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /lists-tg ./cmd/lists-tg
+
+# --- stage 2: package with OpenWrt SDK ---
+FROM openwrt/sdk:${ARCH}-${OPENWRT_VERSION}
+
+WORKDIR /builder
+
+RUN [ -d ./scripts ] || ./setup.sh; \
+	mkdir -p package/feeds/utils package/feeds/luci
+
+COPY openwrt/lists-tg ./package/feeds/utils/lists-tg
+COPY openwrt/luci-app-lists-tg ./package/feeds/luci/luci-app-lists-tg
+COPY --from=gobuild /lists-tg ./package/feeds/utils/lists-tg/files/usr/bin/lists-tg
+
+RUN make defconfig && \
+	make package/lists-tg/compile package/luci-app-lists-tg/compile V=s -j1

@@ -1,0 +1,111 @@
+name: Build IPK packages
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch:
+          - aarch64_cortex-a53
+          - arm_cortex-a7_neon-vfpv4
+          - mipsel_24kc
+          - x86_64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build IPK (${{ matrix.arch }})
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile-ipk
+          tags: lists-tg-ipk:${{ matrix.arch }}
+          build-args: |
+            ARCH=${{ matrix.arch }}
+            OPENWRT_VERSION=24.10.5
+          load: true
+
+      - name: Extract IPK files
+        run: |
+          cid=$(docker create lists-tg-ipk:${{ matrix.arch }})
+          mkdir -p "dist/ipk/${{ matrix.arch }}" /tmp/ipk-extract
+          docker cp "$cid:/builder/bin/packages/." /tmp/ipk-extract/
+          docker rm "$cid"
+          find /tmp/ipk-extract -name 'lists-tg_*.ipk' -exec cp -f {} "dist/ipk/${{ matrix.arch }}/" \;
+          find /tmp/ipk-extract -name 'luci-app-lists-tg_*.ipk' -exec cp -f {} "dist/ipk/${{ matrix.arch }}/" \;
+          ls -la "dist/ipk/${{ matrix.arch }}/"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ipk-${{ matrix.arch }}
+          path: dist/ipk/${{ matrix.arch }}/*.ipk
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download IPK artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ipk-*
+          path: release
+          merge-multiple: true
+
+      - name: Show release files
+        run: find release -name '*.ipk' | sort
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/**/*.ipk
+          draft: false
+          prerelease: false
+
+  commit-dist:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download IPK artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ipk-*
+          path: artifacts
+          merge-multiple: false
+
+      - name: Layout dist/ipk
+        run: |
+          rm -rf dist/ipk/*/
+          for arch in aarch64_cortex-a53 arm_cortex-a7_neon-vfpv4 mipsel_24kc x86_64; do
+            mkdir -p "dist/ipk/${arch}"
+            [ -d "artifacts/ipk-${arch}" ] && cp -f artifacts/ipk-${arch}/*.ipk "dist/ipk/${arch}/" || true
+          done
+          find dist/ipk -name '*.ipk' | sort
+
+      - name: Commit dist/ipk
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add dist/ipk/
+          git diff --staged --quiet && echo "No changes" && exit 0
+          git commit -m "chore: update prebuilt IPK packages"
+          git push
