@@ -144,6 +144,9 @@ func (a *App) restartHiddenReason() string {
 func (a *App) mainMenuKeyboard() *models.ReplyKeyboardMarkup {
 	rows := [][]models.KeyboardButton{
 		{
+			{Text: menuBtnMainMenu},
+		},
+		{
 			{Text: menuBtnDownloadIP},
 			{Text: menuBtnDownloadDomains},
 		},
@@ -167,6 +170,10 @@ func (a *App) mainMenuKeyboard() *models.ReplyKeyboardMarkup {
 
 func (a *App) handleMenuAction(ctx context.Context, b *tgbot.Bot, chatID int64, text string) bool {
 	switch strings.ToLower(strings.TrimSpace(text)) {
+	case strings.ToLower(menuBtnMainMenu):
+		a.logf(chatID, "menu main")
+		a.sendStartCheck(ctx, b, chatID)
+		return true
 	case strings.ToLower(menuBtnDownloadIP):
 		a.logf(chatID, "menu download_ip")
 		a.sendListFile(ctx, b, chatID, a.cfg.IPList, "ip_list.lst", "IP-список")
