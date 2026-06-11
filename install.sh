@@ -17,6 +17,7 @@ REPO_OWNER="bpGusar"
 REPO_NAME="signbox-custom-lists-tgbot"
 REPO_BRANCH="${LST_SIGNBOX_LISTS_TGBOT_REPO_BRANCH:-${LISTS_TG_REPO_BRANCH:-main}}"
 FALLBACK_REPO_URL="https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/${REPO_BRANCH}/dist/ipk"
+DIST_RAW_URL="https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/${REPO_BRANCH}/dist"
 DOWNLOAD_DIR="/tmp/lst-signbox-lists-tgbot-install"
 INSTALL_LUCI="${LST_SIGNBOX_LISTS_TGBOT_INSTALL_LUCI:-${LISTS_TG_INSTALL_LUCI:-1}}"
 RETRIES=3
@@ -71,27 +72,76 @@ download_file() {
 	return 1
 }
 
-keep_latest_packages() {
-	local latest_lists latest_luci f
+manifest_package_name() {
+	local manifest="$1"
+	local package="$2"
+	local arch="$3"
+	local template
 
-	latest_lists="$(ls "${DOWNLOAD_DIR}"/lst-signbox-lists-tgbot_*.ipk 2>/dev/null | sort -V | tail -n 1)"
-	[ -n "$latest_lists" ] || die "lst-signbox-lists-tgbot package not found in ${DOWNLOAD_DIR}"
-	for f in "${DOWNLOAD_DIR}"/lst-signbox-lists-tgbot_*.ipk; do
-		[ "$f" = "$latest_lists" ] || rm -f "$f"
-	done
+	template="$(grep -F "\"${package}\"" "$manifest" | sed -n 's/.*: *"\([^"]*\)".*/\1/p' | head -n 1)"
+	[ -n "$template" ] || return 1
+	printf '%s' "$template" | sed "s/\${ARCH}/${arch}/g"
+}
+
+resolve_package_names() {
+	local arch="$1"
+	local manifest="${DOWNLOAD_DIR}/manifest.json"
+	local lists_pkg luci_pkg
+
+	lists_pkg="$(manifest_package_name "$manifest" "lst-signbox-lists-tgbot" "$arch")"
+	[ -n "$lists_pkg" ] || return 1
 
 	if [ "$INSTALL_LUCI" = "1" ]; then
-		latest_luci="$(ls "${DOWNLOAD_DIR}"/luci-app-lst-signbox-lists-tgbot_*.ipk 2>/dev/null | sort -V | tail -n 1)"
-		[ -n "$latest_luci" ] || die "luci-app-lst-signbox-lists-tgbot package not found in ${DOWNLOAD_DIR}"
-		for f in "${DOWNLOAD_DIR}"/luci-app-lst-signbox-lists-tgbot_*.ipk; do
-			[ "$f" = "$latest_luci" ] || rm -f "$f"
-		done
+		luci_pkg="$(manifest_package_name "$manifest" "luci-app-lst-signbox-lists-tgbot" "$arch")"
+		[ -n "$luci_pkg" ] || return 1
 	fi
+
+	PACKAGE_LISTS="$lists_pkg"
+	PACKAGE_LUCI="$luci_pkg"
+	return 0
+}
+
+fetch_manifest() {
+	local dest="${DOWNLOAD_DIR}/manifest.json"
+	local base_url="${LST_SIGNBOX_LISTS_TGBOT_REPO_URL:-${LISTS_TG_REPO_URL:-$DIST_RAW_URL}}"
+	local manifest_url
+
+	case "$base_url" in
+		*/dist/ipk) manifest_url="${base_url%/ipk}/manifest.json" ;;
+		*/dist)     manifest_url="${base_url}/manifest.json" ;;
+		*)          manifest_url="${DIST_RAW_URL}/manifest.json" ;;
+	esac
+
+	download_file "$manifest_url" "$dest" || return 1
+	resolve_package_names "$1" || return 1
+	return 0
+}
+
+release_asset_url() {
+	local api_response="$1"
+	local filename="$2"
+
+	printf '%s' "$api_response" | grep -F "$filename" | grep -o 'https://[^"[:space:]]*' | head -n 1
+}
+
+release_package_names() {
+	local arch="$1"
+	local api_response="$2"
+	local release_ver
+
+	release_ver="$(printf '%s' "$api_response" | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"v[^"]*"' | head -n 1 | sed 's/.*"v\([^"]*\)".*/\1/')"
+	[ -n "$release_ver" ] || return 1
+
+	PACKAGE_LISTS="lst-signbox-lists-tgbot_${release_ver}-r1_${arch}.ipk"
+	if [ "$INSTALL_LUCI" = "1" ]; then
+		PACKAGE_LUCI="luci-app-lst-signbox-lists-tgbot_${release_ver}-r1_all.ipk"
+	fi
+	return 0
 }
 
 fetch_from_release() {
 	local arch="$1"
-	local api_response url filename
+	local api_response url
 
 	if command -v curl >/dev/null 2>&1; then
 		api_response="$(curl -fsSL "$REPO_API" 2>/dev/null || true)"
@@ -105,32 +155,38 @@ fetch_from_release() {
 	fi
 
 	[ -n "$api_response" ] || return 1
+	release_package_names "$arch" "$api_response" || return 1
 
-	printf '%s' "$api_response" | grep -o 'https://[^"[:space:]]*\.ipk' | while read -r url; do
-		filename="$(basename "$url")"
-		case "$filename" in
-			lst-signbox-lists-tgbot_*_"${arch}".ipk|luci-app-lst-signbox-lists-tgbot_*_all.ipk)
-				download_file "$url" "${DOWNLOAD_DIR}/${filename}" || return 1
-				;;
-		esac
-	done
+	url="$(release_asset_url "$api_response" "$PACKAGE_LISTS")"
+	[ -n "$url" ] || return 1
+	download_file "$url" "${DOWNLOAD_DIR}/${PACKAGE_LISTS}" || return 1
 
-	[ -f "${DOWNLOAD_DIR}/lst-signbox-lists-tgbot_"*_"${arch}.ipk" ] 2>/dev/null || return 1
+	if [ "$INSTALL_LUCI" = "1" ]; then
+		url="$(release_asset_url "$api_response" "$PACKAGE_LUCI")"
+		[ -n "$url" ] || return 1
+		download_file "$url" "${DOWNLOAD_DIR}/${PACKAGE_LUCI}" || return 1
+	fi
+
 	return 0
 }
 
 fetch_from_local() {
 	local arch="$1"
-	local base local_dir
+	local base local_dir manifest_src
 
 	base="$(script_dir)"
 	local_dir="${base}/dist/ipk/${arch}"
+	manifest_src="${base}/dist/manifest.json"
 	[ -d "$local_dir" ] || return 1
+	[ -f "$manifest_src" ] || return 1
 
 	log "using local packages from ${local_dir}"
-	cp "${local_dir}"/lst-signbox-lists-tgbot_*.ipk "$DOWNLOAD_DIR/" 2>/dev/null || return 1
+	cp "$manifest_src" "${DOWNLOAD_DIR}/manifest.json"
+	resolve_package_names "$arch" || return 1
+
+	cp "${local_dir}/${PACKAGE_LISTS}" "${DOWNLOAD_DIR}/${PACKAGE_LISTS}" 2>/dev/null || return 1
 	if [ "$INSTALL_LUCI" = "1" ]; then
-		cp "${local_dir}"/luci-app-lst-signbox-lists-tgbot_*.ipk "$DOWNLOAD_DIR/" 2>/dev/null || return 1
+		cp "${local_dir}/${PACKAGE_LUCI}" "${DOWNLOAD_DIR}/${PACKAGE_LUCI}" 2>/dev/null || return 1
 	fi
 	return 0
 }
@@ -138,22 +194,13 @@ fetch_from_local() {
 fetch_from_raw() {
 	local arch="$1"
 	local base_url="${LST_SIGNBOX_LISTS_TGBOT_REPO_URL:-${LISTS_TG_REPO_URL:-$FALLBACK_REPO_URL}}"
-	local lists_glob luci_glob f
 
 	log "fallback: raw packages from ${base_url}/${arch}"
-	for f in "${base_url}/${arch}"/lst-signbox-lists-tgbot_*.ipk; do
-		[ -f "$f" ] || continue
-		wget -q -O "${DOWNLOAD_DIR}/$(basename "$f")" "$f" || return 1
-		break
-	done
-	[ -n "$(ls "${DOWNLOAD_DIR}"/lst-signbox-lists-tgbot_*.ipk 2>/dev/null)" ] || return 1
+	fetch_manifest "$arch" || return 1
 
+	download_file "${base_url}/${arch}/${PACKAGE_LISTS}" "${DOWNLOAD_DIR}/${PACKAGE_LISTS}" || return 1
 	if [ "$INSTALL_LUCI" = "1" ]; then
-		for f in "${base_url}/${arch}"/luci-app-lst-signbox-lists-tgbot_*.ipk; do
-			[ -f "$f" ] || continue
-			wget -q -O "${DOWNLOAD_DIR}/$(basename "$f")" "$f" || return 1
-			break
-		done
+		download_file "${base_url}/${arch}/${PACKAGE_LUCI}" "${DOWNLOAD_DIR}/${PACKAGE_LUCI}" || return 1
 	fi
 	return 0
 }
@@ -171,7 +218,6 @@ fetch_packages() {
 		return 0
 	fi
 	if fetch_from_raw "$arch"; then
-		keep_latest_packages
 		return 0
 	fi
 
@@ -200,14 +246,14 @@ install_packages() {
 	fi
 
 	log "installing lst-signbox-lists-tgbot (${arch})"
-	lists_ipk="$(ls "${DOWNLOAD_DIR}"/lst-signbox-lists-tgbot_*.ipk 2>/dev/null | sort -V | tail -n 1)"
-	[ -n "$lists_ipk" ] || die "lst-signbox-lists-tgbot package not found"
+	lists_ipk="${DOWNLOAD_DIR}/${PACKAGE_LISTS}"
+	[ -f "$lists_ipk" ] || die "lst-signbox-lists-tgbot package not found"
 	opkg install --force-reinstall --force-downgrade "$lists_ipk"
 
 	if [ "$INSTALL_LUCI" = "1" ]; then
 		log "installing LuCI app"
-		luci_ipk="$(ls "${DOWNLOAD_DIR}"/luci-app-lst-signbox-lists-tgbot_*.ipk 2>/dev/null | sort -V | tail -n 1)"
-		[ -n "$luci_ipk" ] || die "luci-app-lst-signbox-lists-tgbot package not found"
+		luci_ipk="${DOWNLOAD_DIR}/${PACKAGE_LUCI}"
+		[ -f "$luci_ipk" ] || die "luci-app-lst-signbox-lists-tgbot package not found"
 		opkg install --force-reinstall --force-downgrade "$luci_ipk"
 		rm -f /tmp/luci-indexcache /tmp/luci-modulecache 2>/dev/null || true
 	fi
@@ -286,7 +332,6 @@ main() {
 
 	backup_current_config
 	fetch_packages "$arch"
-	keep_latest_packages
 	install_packages "$arch"
 	configure_token
 	enable_service

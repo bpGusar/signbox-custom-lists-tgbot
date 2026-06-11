@@ -63,6 +63,7 @@ jobs:
       - name: Extract IPK files
         run: |
           cid=$(docker create lst-signbox-lists-tgbot-ipk:${{ matrix.arch }})
+          rm -rf "dist/ipk/${{ matrix.arch }}"
           mkdir -p "dist/ipk/${{ matrix.arch }}" /tmp/ipk-extract
           docker cp "$cid:/builder/bin/packages/." /tmp/ipk-extract/
           docker rm "$cid"
