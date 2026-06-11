@@ -54,9 +54,13 @@ func (a *App) sendStartCheck(ctx context.Context, b *tgbot.Bot, chatID int64) {
 
 func (a *App) welcomeText() string {
 	text := "✅ Бот готов к работе.\n\n" +
-		"Отправьте список доменов или IP/CIDR через запятую или с новой строки.\n" +
-		"Строки с // — отключённые записи.\n" +
-		"Бот определит тип и предложит действия.\n\n" +
+		"Отправьте список доменов или IP/CIDR через запятую или с новой строки.\n\n" +
+		"Примеры:\n" +
+		"• example.com, github.com\n" +
+		"• kick.com\n" +
+		"• 192.168.1.0/24\n\n" +
+		"Можно вставить строки из файла — префикс // будет проигнорирован.\n" +
+		"Бот определит тип, проверит файл и предложит действия.\n\n" +
 		fmt.Sprintf("📄 Домены: %s\n📄 IP: %s", a.cfg.DomainList, a.cfg.IPList) +
 		"\n\n⌨️ /menu — показать кнопки, /hide — скрыть"
 
@@ -131,7 +135,7 @@ func (a *App) mainMenuKeyboard() *models.ReplyKeyboardMarkup {
 	return &models.ReplyKeyboardMarkup{
 		Keyboard:              rows,
 		ResizeKeyboard:        true,
-		InputFieldPlaceholder: "домены/IP, // — отключить",
+		InputFieldPlaceholder: "домены или IP/CIDR",
 	}
 }
 
@@ -274,7 +278,7 @@ func (a *App) handleListInput(ctx context.Context, b *tgbot.Bot, update *models.
 		return
 	}
 	if parsed.Mixed {
-		a.logf(chatID, "list_input mixed_types active=%d disable=%d", len(parsed.Valid), len(parsed.ToDisable))
+		a.logf(chatID, "list_input mixed_types count=%d", len(parsed.Valid))
 		_, _ = b.SendMessage(ctx, &tgbot.SendMessageParams{
 			ChatID: chatID,
 			Text:   "⚠️ Отправьте только домены или только IP/CIDR в одном сообщении.",
@@ -284,51 +288,24 @@ func (a *App) handleListInput(ctx context.Context, b *tgbot.Bot, update *models.
 
 	path := listPath(a.cfg, parsed.Type)
 	label := typeLabel(parsed.Type)
-	a.logf(chatID, "list_input accepted type=%s active=%d disable=%d path=%q",
-		label, len(parsed.Valid), len(parsed.ToDisable), path)
+	a.logf(chatID, "list_input accepted type=%s count=%d path=%q",
+		label, len(parsed.Valid), path)
 
-	var msg string
-	var rows [][]models.InlineKeyboardButton
-	opID := a.sess.Create(chatID, ActionAdd, parsed.Type, path, parsed.Valid, parsed.ToDisable)
+	validNew, validActive, validDisabled, err := classifyBuckets(path, parsed.Valid)
+	if err != nil {
+		a.logf(chatID, "list_input classify_error path=%q err=%v", path, err)
+		_, _ = b.SendMessage(ctx, &tgbot.SendMessageParams{
+			ChatID: chatID,
+			Text:   "❌ Ошибка чтения файла: " + err.Error(),
+		})
+		return
+	}
 
-	switch {
-	case len(parsed.Valid) == 0 && len(parsed.ToDisable) > 0:
-		msg = fmt.Sprintf("⏸ К отключению (%s):\n%s", label, lists.FormatDisabledList(parsed.ToDisable))
-		rows = [][]models.InlineKeyboardButton{
-			{
-				{Text: "⏸ Отключить", CallbackData: cbPrefix + opID + ":dis"},
-				{Text: "🗑 Удалить", CallbackData: cbPrefix + opID + ":del"},
-			},
-			{{Text: "❌ Отмена", CallbackData: cbPrefix + opID + ":cancel"}},
-		}
-	case len(parsed.ToDisable) > 0:
-		msg = fmt.Sprintf("📥 Получено (%s):\n\n➕ Добавить (%d):\n%s\n\n⏸ Отключить (%d):\n%s",
-			label,
-			len(parsed.Valid), lists.FormatList(parsed.Valid),
-			len(parsed.ToDisable), lists.FormatDisabledList(parsed.ToDisable))
-		rows = [][]models.InlineKeyboardButton{
-			{{Text: "✅ Применить всё", CallbackData: cbPrefix + opID + ":apply"}},
-			{
-				{Text: "➕ Добавить", CallbackData: cbPrefix + opID + ":add"},
-				{Text: "⏸ Отключить", CallbackData: cbPrefix + opID + ":dis"},
-			},
-			{
-				{Text: "🗑 Удалить", CallbackData: cbPrefix + opID + ":del"},
-				{Text: "❌ Отмена", CallbackData: cbPrefix + opID + ":cancel"},
-			},
-		}
-	default:
-		msg = fmt.Sprintf("📥 Получено (%s):\n%s", label, lists.FormatList(parsed.Valid))
-		rows = [][]models.InlineKeyboardButton{
-			{
-				{Text: "➕ Добавить", CallbackData: cbPrefix + opID + ":add"},
-				{Text: "🗑 Удалить", CallbackData: cbPrefix + opID + ":del"},
-			},
-			{
-				{Text: "⏸ Отключить", CallbackData: cbPrefix + opID + ":dis"},
-				{Text: "❌ Отмена", CallbackData: cbPrefix + opID + ":cancel"},
-			},
-		}
+	opID := a.sess.Create(chatID, ActionAdd, parsed.Type, path, parsed.Valid, nil)
+	msg := buildListInputMessage(label, parsed.Valid, validNew, validActive, validDisabled)
+	rows, hasActions := buildListInputKeyboard(opID, validNew, validActive, validDisabled)
+	if !hasActions {
+		msg += "\n\nℹ️ Нечего делать — все записи уже в нужном состоянии."
 	}
 	kb := &models.InlineKeyboardMarkup{InlineKeyboard: rows}
 
@@ -772,6 +749,89 @@ func (a *App) podkopIntegrationText(ctx context.Context) (string, bool) {
 
 func (a *App) answerAndEdit(ctx context.Context, b *tgbot.Bot, update *models.Update, text string) {
 	a.answerAndEditMarkup(ctx, b, update, text, nil)
+}
+
+func classifyBuckets(path string, values []string) (newVals, active, disabled []string, err error) {
+	if len(values) == 0 {
+		return nil, nil, nil, nil
+	}
+	classified, err := lists.ClassifyValues(path, values)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	newVals, active, disabled = lists.GroupByStatus(classified)
+	return newVals, active, disabled, nil
+}
+
+func appendFileStatus(sb *strings.Builder, title string, newVals, active, disabled []string) {
+	if len(newVals) == 0 && len(active) == 0 && len(disabled) == 0 {
+		return
+	}
+	sb.WriteString("\n\n")
+	sb.WriteString(title)
+	if len(newVals) > 0 {
+		sb.WriteString(fmt.Sprintf("\n🆕 Новые:\n%s", lists.FormatList(newVals)))
+	}
+	if len(active) > 0 {
+		sb.WriteString(fmt.Sprintf("\n✅ Уже активны:\n%s", lists.FormatList(active)))
+	}
+	if len(disabled) > 0 {
+		sb.WriteString(fmt.Sprintf("\n⏸ Уже отключены:\n%s", lists.FormatList(disabled)))
+	}
+}
+
+func buildListInputMessage(
+	label string,
+	values []string,
+	newVals, active, disabled []string,
+) string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("📥 Получено (%s):\n%s", label, lists.FormatList(values)))
+	appendFileStatus(&sb, "📋 В файле:", newVals, active, disabled)
+	return sb.String()
+}
+
+func buildListInputKeyboard(
+	opID string,
+	newVals, active, disabled []string,
+) ([][]models.InlineKeyboardButton, bool) {
+	cancelBtn := models.InlineKeyboardButton{Text: "❌ Отмена", CallbackData: cbPrefix + opID + ":cancel"}
+
+	canAdd := len(newVals) > 0 || len(disabled) > 0
+	canDisable := len(active) > 0 || len(newVals) > 0
+	canDelete := len(active) > 0 || len(disabled) > 0
+
+	var rows [][]models.InlineKeyboardButton
+	hasActions := false
+
+	var topRow []models.InlineKeyboardButton
+	if canAdd {
+		topRow = append(topRow, models.InlineKeyboardButton{
+			Text: "➕ Добавить", CallbackData: cbPrefix + opID + ":add",
+		})
+		hasActions = true
+	}
+	if canDelete {
+		topRow = append(topRow, models.InlineKeyboardButton{
+			Text: "🗑 Удалить", CallbackData: cbPrefix + opID + ":del",
+		})
+		hasActions = true
+	}
+	if len(topRow) > 0 {
+		rows = append(rows, topRow)
+	}
+
+	var bottomRow []models.InlineKeyboardButton
+	if canDisable {
+		bottomRow = append(bottomRow, models.InlineKeyboardButton{
+			Text: "⏸ Отключить", CallbackData: cbPrefix + opID + ":dis",
+		})
+		hasActions = true
+	}
+	bottomRow = append(bottomRow, cancelBtn)
+	rows = append(rows, bottomRow)
+
+	return rows, hasActions
 }
 
 func (a *App) answerAndEditMarkup(ctx context.Context, b *tgbot.Bot, update *models.Update, text string, kb *models.InlineKeyboardMarkup) {

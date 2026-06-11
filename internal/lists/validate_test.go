@@ -31,11 +31,11 @@ func TestParseInputDisabledLines(t *testing.T) {
 	if r.Mixed || len(r.Invalid) > 0 || r.Type != TypeDomain {
 		t.Fatalf("unexpected: %+v", r)
 	}
-	if len(r.Valid) != 1 || r.Valid[0] != "active.com" {
+	if len(r.Valid) != 2 {
 		t.Fatalf("valid: %+v", r.Valid)
 	}
-	if len(r.ToDisable) != 1 || r.ToDisable[0] != "disabled.com" {
-		t.Fatalf("to disable: %+v", r.ToDisable)
+	if r.Valid[0] != "active.com" || r.Valid[1] != "disabled.com" {
+		t.Fatalf("valid: %+v", r.Valid)
 	}
 }
 
@@ -49,17 +49,17 @@ xdaforums.com`
 	if r.Mixed || len(r.Invalid) > 0 || r.Type != TypeDomain {
 		t.Fatalf("unexpected: %+v", r)
 	}
-	if len(r.Valid) != 4 {
-		t.Fatalf("want 4 active, got %d: %v", len(r.Valid), r.Valid)
+	if len(r.Valid) != 5 {
+		t.Fatalf("want 5 entries, got %d: %v", len(r.Valid), r.Valid)
 	}
-	if len(r.ToDisable) != 1 || r.ToDisable[0] != "kick.com" {
-		t.Fatalf("to disable: %+v", r.ToDisable)
+	if r.Valid[3] != "kick.com" {
+		t.Fatalf("kick.com should be normalized: %+v", r.Valid)
 	}
 }
 
 func TestParseInputInlineComment(t *testing.T) {
 	r := ParseInput("a.com, // b.com")
-	if len(r.Valid) != 1 || len(r.ToDisable) != 1 {
+	if len(r.Valid) != 2 || r.Valid[0] != "a.com" || r.Valid[1] != "b.com" {
 		t.Fatalf("unexpected: %+v", r)
 	}
 }
