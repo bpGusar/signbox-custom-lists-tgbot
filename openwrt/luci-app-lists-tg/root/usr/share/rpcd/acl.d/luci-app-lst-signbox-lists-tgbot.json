@@ -9,8 +9,14 @@
         "/etc/init.d/lst-signbox-lists-tgbot": [
           "exec"
         ],
+        "/usr/sbin/lst-signbox-lists-tgbot-upgrade": [
+          "exec"
+        ],
         "/bin/tail": [
           "exec"
+        ],
+        "/tmp/lst-signbox-lists-tgbot-upgrade.log": [
+          "read"
         ],
         "/etc/lst-signbox-lists-tgbot/*": [
           "read"
