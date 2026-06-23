@@ -31,6 +31,7 @@ const (
 	menuBtnViewIP          = "📋 Показать IP"
 	menuBtnViewDomains     = "📋 Показать домены"
 	menuBtnCheckPodkop     = "🔗 Проверить Podkop"
+	menuBtnSettings        = "⚙️ Настройки"
 	tgMaxMessageLen        = 4096
 )
 

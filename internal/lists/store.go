@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -120,12 +121,60 @@ func CreateFiles(paths ...string) error {
 	return nil
 }
 
-func writeAtomic(path string, lines []string) error {
+func hostWithoutPath(host string) string {
+	host = strings.TrimSpace(host)
+	if i := strings.Index(host, "/"); i >= 0 {
+		host = host[:i]
+	}
+	return strings.ToLower(host)
+}
+
+// baseDomain returns registrable domain (eTLD+1 heuristic: last two labels).
+func baseDomain(host string) string {
+	host = hostWithoutPath(host)
+	labels := strings.Split(host, ".")
+	if len(labels) <= 2 {
+		return host
+	}
+	return labels[len(labels)-2] + "." + labels[len(labels)-1]
+}
+
+func domainSortKey(line string) string {
+	var host string
+	if e, ok := ParseLine(line); ok {
+		host = e.Value
+	} else {
+		host = line
+	}
+	// Sort by base domain first, then by full hostname within the same domain.
+	return baseDomain(host) + "\x00" + hostWithoutPath(host)
+}
+
+func sortDomainLines(lines []string) []string {
+	if len(lines) < 2 {
+		return lines
+	}
+	sorted := append([]string(nil), lines...)
+	slices.SortFunc(sorted, func(a, b string) int {
+		return strings.Compare(domainSortKey(a), domainSortKey(b))
+	})
+	return sorted
+}
+
+func maybeSortLines(lines []string, listType EntryType) []string {
+	if listType == TypeDomain {
+		return sortDomainLines(lines)
+	}
+	return lines
+}
+
+func writeAtomic(path string, lines []string, listType EntryType) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 
+	lines = maybeSortLines(lines, listType)
 	content := strings.Join(lines, "\n")
 	if len(lines) > 0 {
 		content += "\n"
@@ -149,7 +198,7 @@ func writeAtomic(path string, lines []string) error {
 	return os.Rename(tmpPath, path)
 }
 
-func AddAll(path string, values []string) error {
+func AddAll(path string, values []string, listType EntryType) error {
 	classified, err := ClassifyValues(path, values)
 	if err != nil {
 		return err
@@ -188,10 +237,10 @@ func AddAll(path string, values []string) error {
 			lines = append(lines, c.Value)
 		}
 	}
-	return writeAtomic(path, lines)
+	return writeAtomic(path, lines, listType)
 }
 
-func AddNew(path string, values []string) error {
+func AddNew(path string, values []string, listType EntryType) error {
 	classified, err := ClassifyValues(path, values)
 	if err != nil {
 		return err
@@ -216,10 +265,10 @@ func AddNew(path string, values []string) error {
 			lines = append(lines, c.Value)
 		}
 	}
-	return writeAtomic(path, lines)
+	return writeAtomic(path, lines, listType)
 }
 
-func Delete(path string, values []string) error {
+func Delete(path string, values []string, listType EntryType) error {
 	entries, err := ReadFile(path)
 	if err != nil {
 		return err
@@ -241,10 +290,10 @@ func Delete(path string, values []string) error {
 			lines = append(lines, e.Value)
 		}
 	}
-	return writeAtomic(path, lines)
+	return writeAtomic(path, lines, listType)
 }
 
-func Disable(path string, values []string) error {
+func Disable(path string, values []string, listType EntryType) error {
 	entries, err := ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return err
@@ -273,10 +322,10 @@ func Disable(path string, values []string) error {
 			lines = append(lines, disabledPrefix+v)
 		}
 	}
-	return writeAtomic(path, lines)
+	return writeAtomic(path, lines, listType)
 }
 
-func DisableExistingOnly(path string, values []string) error {
+func DisableExistingOnly(path string, values []string, listType EntryType) error {
 	entries, err := ReadFile(path)
 	if err != nil {
 		return err
@@ -298,10 +347,10 @@ func DisableExistingOnly(path string, values []string) error {
 			lines = append(lines, e.Value)
 		}
 	}
-	return writeAtomic(path, lines)
+	return writeAtomic(path, lines, listType)
 }
 
-func AddDisabled(path string, values []string) error {
+func AddDisabled(path string, values []string, listType EntryType) error {
 	entries, err := ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return err
@@ -326,7 +375,7 @@ func AddDisabled(path string, values []string) error {
 			lines = append(lines, disabledPrefix+v)
 		}
 	}
-	return writeAtomic(path, lines)
+	return writeAtomic(path, lines, listType)
 }
 
 func GroupByStatus(classified []Classified) (newVals, active, disabled []string) {

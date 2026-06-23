@@ -123,6 +123,24 @@ tail -f /etc/lst-signbox-lists-tgbot/logs/bot.log
 
 ## Локальная разработка
 
+Бот можно запускать на ПК без OpenWrt: конфигурация берётся из переменных окружения (UCI не нужен).  
+Списки и логи по умолчанию пишутся в папку `testdata/` в корне репозитория.
+
+**Требования:** Go 1.22+, токен тестового бота от [@BotFather](https://t.me/BotFather).  
+Для разработки лучше отдельный бот — не запускайте локально бота с тем же токеном, что на роутере.
+
+### Windows
+
+Скрипт проверяет окружение, создаёт `testdata/`, настраивает переменные и предлагает запустить бота:
+
+```powershell
+.\scripts\dev-windows.ps1
+```
+
+Токен можно сохранить в `.env.local` (файл в `.gitignore`). При повторном запуске скрипт подхватит его автоматически.
+
+### Linux / macOS
+
 ```bash
 export LST_SIGNBOX_LISTS_TGBOT_TOKEN="your-token"
 export LST_SIGNBOX_LISTS_TGBOT_DOMAIN_LIST="/tmp/domain_list.lst"
@@ -134,6 +152,27 @@ export LST_SIGNBOX_LISTS_TGBOT_LOG_PATH="/tmp/lst-signbox-lists-tgbot.log"
 make build
 ./lst-signbox-lists-tgbot
 ```
+
+### Тестирование
+
+В Telegram: `/start`, затем список доменов или IP. Логи — `testdata/bot.log` (Windows) или путь из `LST_SIGNBOX_LISTS_TGBOT_LOG_PATH`.
+
+Unit-тесты без Telegram:
+
+```bash
+go test ./...
+```
+
+### После изменений в коде
+
+Запущенный бинарник не подхватывает правки сам — нужно пересобрать и перезапустить:
+
+```bash
+go build -trimpath -o lst-signbox-lists-tgbot ./cmd/lst-signbox-lists-tgbot   # Linux/macOS
+go build -trimpath -o lst-signbox-lists-tgbot.exe .\cmd\lst-signbox-lists-tgbot  # Windows
+```
+
+Остановка работающего бота: `Ctrl+C`. На Windows можно снова запустить `.\scripts\dev-windows.ps1`.
 
 ## Структура
 

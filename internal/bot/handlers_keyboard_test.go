@@ -119,12 +119,12 @@ func TestMainMenuInlineKeyboard_baseActions(t *testing.T) {
 	if !containsAll(texts, want...) {
 		t.Fatalf("expected base menu buttons, got %v", texts)
 	}
-	if !containsNone(texts, menuBtnMainMenu, menuBtnCheckPodkop) {
+	if !containsNone(texts, menuBtnMainMenu, menuBtnCheckPodkop, menuBtnSettings) {
 		t.Fatalf("unexpected buttons in inline menu: %v", texts)
 	}
 }
 
-func TestMainMenuInlineKeyboard_withRestartAndPodkop(t *testing.T) {
+func TestMainMenuInlineKeyboard_withSettings(t *testing.T) {
 	app := &App{cfg: &config.Config{
 		RestartCmd:   "/etc/init.d/podkop restart",
 		ServiceLabel: "Podkop",
@@ -136,8 +136,48 @@ func TestMainMenuInlineKeyboard_withRestartAndPodkop(t *testing.T) {
 			texts = append(texts, btn.Text)
 		}
 	}
-	if !containsAll(texts, app.menuBtnRestart(), menuBtnCheckPodkop) {
-		t.Fatalf("expected restart and podkop buttons, got %v", texts)
+	if !containsAll(texts, menuBtnSettings) {
+		t.Fatalf("expected settings button, got %v", texts)
+	}
+	if !containsNone(texts, app.menuBtnRestart(), menuBtnCheckPodkop) {
+		t.Fatalf("restart and podkop should be in settings, not main menu: %v", texts)
+	}
+}
+
+func TestSettingsMenuInlineKeyboard_withRestartAndPodkop(t *testing.T) {
+	app := &App{cfg: &config.Config{
+		RestartCmd:   "/etc/init.d/podkop restart",
+		ServiceLabel: "Podkop",
+	}}
+	kb := app.settingsMenuInlineKeyboard()
+	var texts []string
+	for _, row := range kb.InlineKeyboard {
+		for _, btn := range row {
+			texts = append(texts, btn.Text)
+		}
+	}
+	if !containsAll(texts, app.menuBtnRestart(), menuBtnCheckPodkop, menuBtnMainMenu) {
+		t.Fatalf("expected restart, podkop and main menu buttons, got %v", texts)
+	}
+}
+
+func TestSettingsMenuInlineKeyboard_singBoxOnlyRestart(t *testing.T) {
+	app := &App{cfg: &config.Config{
+		RestartCmd:   "/etc/init.d/sing-box restart",
+		ServiceLabel: "sing-box",
+	}}
+	kb := app.settingsMenuInlineKeyboard()
+	var texts []string
+	for _, row := range kb.InlineKeyboard {
+		for _, btn := range row {
+			texts = append(texts, btn.Text)
+		}
+	}
+	if !containsAll(texts, app.menuBtnRestart(), menuBtnMainMenu) {
+		t.Fatalf("expected restart and main menu buttons, got %v", texts)
+	}
+	if !containsNone(texts, menuBtnCheckPodkop) {
+		t.Fatalf("podkop check should not appear for sing-box, got %v", texts)
 	}
 }
 
