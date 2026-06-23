@@ -90,14 +90,51 @@ func TestParseInputInlineComment(t *testing.T) {
 	}
 }
 
+func TestSortDomainLines(t *testing.T) {
+	lines := []string{
+		"www.zebra.com",
+		"zebra.com",
+		"// apple.com",
+		"api.beta.com",
+		"alpha.org",
+	}
+	got := sortDomainLines(lines)
+	want := []string{
+		"// apple.com",
+		"alpha.org",
+		"api.beta.com",
+		"zebra.com",
+		"www.zebra.com",
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("index %d: got %q want %q (full: %v)", i, got[i], want[i], got)
+		}
+	}
+}
+
+func TestBaseDomain(t *testing.T) {
+	cases := map[string]string{
+		"kick.com":           "kick.com",
+		"cdn.kick.com":       "kick.com",
+		"api.github.com":     "github.com",
+		"www.api.example.org": "example.org",
+	}
+	for host, want := range cases {
+		if got := baseDomain(host); got != want {
+			t.Fatalf("baseDomain(%q) = %q, want %q", host, got, want)
+		}
+	}
+}
+
 func TestAddDisableDelete(t *testing.T) {
 	dir := t.TempDir()
 	path := dir + "/list.lst"
 
-	if err := AddNew(path, []string{"a.com", "b.com"}); err != nil {
+	if err := AddNew(path, []string{"a.com", "b.com"}, TypeDomain); err != nil {
 		t.Fatal(err)
 	}
-	if err := DisableExistingOnly(path, []string{"a.com"}); err != nil {
+	if err := DisableExistingOnly(path, []string{"a.com"}, TypeDomain); err != nil {
 		t.Fatal(err)
 	}
 
@@ -118,7 +155,7 @@ func TestAddDisableDelete(t *testing.T) {
 		t.Fatalf("classified wrong: new=%v active=%v dis=%v", newV, active, disabled)
 	}
 
-	if err := AddAll(path, []string{"a.com", "c.com"}); err != nil {
+	if err := AddAll(path, []string{"a.com", "c.com"}, TypeDomain); err != nil {
 		t.Fatal(err)
 	}
 	entries, _ = ReadFile(path)
@@ -129,7 +166,7 @@ func TestAddDisableDelete(t *testing.T) {
 		t.Fatalf("a.com should be enabled: %+v", entries[0])
 	}
 
-	if err := Delete(path, []string{"b.com"}); err != nil {
+	if err := Delete(path, []string{"b.com"}, TypeDomain); err != nil {
 		t.Fatal(err)
 	}
 	entries, _ = ReadFile(path)

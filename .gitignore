@@ -1,4 +1,7 @@
 /lst-signbox-lists-tgbot
+/lst-signbox-lists-tgbot.exe
 /lst-signbox-lists-tgbot-*
 /openwrt/lists-tg/files/usr/bin/lst-signbox-lists-tgbot
 /.idea/
+/.env.local
+/testdata/

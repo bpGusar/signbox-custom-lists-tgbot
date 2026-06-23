@@ -2,13 +2,28 @@
   "luci-app-lst-signbox-lists-tgbot": {
     "description": "Grant access to Lists Telegram Bot configuration",
     "read": {
+      "cgi-io": [
+        "exec"
+      ],
       "file": {
-        "/etc/init.d/lst-signbox-lists-tgbot": ["exec"]
+        "/etc/init.d/lst-signbox-lists-tgbot": [
+          "exec"
+        ],
+        "/bin/tail": [
+          "exec"
+        ],
+        "/etc/lst-signbox-lists-tgbot/*": [
+          "read"
+        ]
       },
-      "uci": ["lst-signbox-lists-tgbot"]
+      "uci": [
+        "lst-signbox-lists-tgbot"
+      ]
     },
     "write": {
-      "uci": ["lst-signbox-lists-tgbot"]
+      "uci": [
+        "lst-signbox-lists-tgbot"
+      ]
     }
   }
 }
