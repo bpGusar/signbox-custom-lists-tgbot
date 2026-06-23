@@ -10,7 +10,7 @@ define Package/lst-signbox-lists-tgbot
   SECTION:=utils
   CATEGORY:=Utilities
   TITLE:=Telegram bot for domain and IP lists
-  DEPENDS:=+ca-bundle
+  DEPENDS:=+ca-bundle +wget
 endef
 
 define Package/lst-signbox-lists-tgbot/description
@@ -30,6 +30,8 @@ endef
 define Package/lst-signbox-lists-tgbot/install
 	$(INSTALL_DIR) $(1)/usr/bin
 	$(INSTALL_BIN) ./files/usr/bin/lst-signbox-lists-tgbot $(1)/usr/bin/lst-signbox-lists-tgbot
+	$(INSTALL_DIR) $(1)/usr/sbin
+	$(INSTALL_BIN) ./files/usr/sbin/lst-signbox-lists-tgbot-upgrade $(1)/usr/sbin/lst-signbox-lists-tgbot-upgrade
 	$(INSTALL_DIR) $(1)/etc/config
 	$(INSTALL_CONF) ./files/etc/config/lst-signbox-lists-tgbot $(1)/etc/config/lst-signbox-lists-tgbot
 	$(INSTALL_DIR) $(1)/etc/init.d

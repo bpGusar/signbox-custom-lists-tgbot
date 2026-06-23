@@ -1,0 +1,386 @@
+#!/bin/sh
+# Upgrade lst-signbox-lists-tgbot and luci-app-lst-signbox-lists-tgbot from GitHub Release.
+#
+# Usage:
+#   lst-signbox-lists-tgbot-upgrade check   — print version JSON to stdout
+#   lst-signbox-lists-tgbot-upgrade start   — begin background upgrade
+#   lst-signbox-lists-tgbot-upgrade status  — print state JSON to stdout
+
+set -eu
+
+REPO_API="https://api.github.com/repos/bpGusar/signbox-custom-lists-tgbot/releases/latest"
+REPO_OWNER="bpGusar"
+REPO_NAME="signbox-custom-lists-tgbot"
+REPO_BRANCH="${LST_SIGNBOX_LISTS_TGBOT_REPO_BRANCH:-main}"
+FALLBACK_REPO_URL="https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/${REPO_BRANCH}/dist/ipk"
+DIST_RAW_URL="https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/${REPO_BRANCH}/dist"
+DOWNLOAD_DIR="/tmp/lst-signbox-lists-tgbot-install"
+LOG="/tmp/lst-signbox-lists-tgbot-upgrade.log"
+LOCK="/tmp/lst-signbox-lists-tgbot-upgrade.lock"
+RETRIES=3
+
+log() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
+
+die() {
+	log "ERROR: $*"
+	return 1
+}
+
+need_root() {
+	[ "$(id -u)" -eq 0 ] || die "run as root"
+}
+
+need_openwrt() {
+	command -v opkg >/dev/null 2>&1 || die "opkg not found"
+	[ -f /etc/openwrt_release ] || die "unsupported system"
+}
+
+detect_arch() {
+	# shellcheck disable=SC1091
+	. /etc/openwrt_release
+	[ -n "${DISTRIB_ARCH:-}" ] || die "cannot detect DISTRIB_ARCH"
+	printf '%s' "$DISTRIB_ARCH"
+}
+
+normalize_ver() {
+	echo "$1" | sed 's/^v//I;s/-r.*//;s/^[[:space:]]*//;s/[[:space:]]*$//'
+}
+
+ver_lt() {
+	local a b
+	a="$(normalize_ver "$1")"
+	b="$(normalize_ver "$2")"
+	[ -n "$a" ] && [ -n "$b" ] && [ "$a" != "$b" ] && [ "$a" = "$(printf '%s\n%s' "$a" "$b" | sort -V | head -n1)" ]
+}
+
+installed_version() {
+	opkg info lst-signbox-lists-tgbot 2>/dev/null | awk -F': ' '/^Version:/{print $2; exit}'
+}
+
+fetch_api_response() {
+	if command -v curl >/dev/null 2>&1; then
+		curl -fsSL --max-time 20 "$REPO_API" 2>/dev/null || true
+	elif command -v wget >/dev/null 2>&1; then
+		wget -qO- --timeout=20 "$REPO_API" 2>/dev/null || true
+	else
+		return 1
+	fi
+}
+
+fetch_latest_version() {
+	local api_response tag
+	api_response="$(fetch_api_response)" || return 1
+	[ -n "$api_response" ] || return 1
+	if printf '%s' "$api_response" | grep -q 'API rate limit'; then
+		return 1
+	fi
+	tag="$(printf '%s' "$api_response" | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n 1 | sed 's/.*"\([^"]*\)"$/\1/')"
+	[ -n "$tag" ] || return 1
+	normalize_ver "$tag"
+}
+
+download_file() {
+	local url="$1"
+	local dest="$2"
+	local attempt=0
+
+	while [ "$attempt" -lt "$RETRIES" ]; do
+		log "download $(basename "$dest") (attempt $((attempt + 1))/$RETRIES)"
+		if wget -q -O "$dest" "$url" && [ -s "$dest" ]; then
+			return 0
+		fi
+		rm -f "$dest"
+		attempt=$((attempt + 1))
+	done
+	return 1
+}
+
+manifest_package_name() {
+	local manifest="$1"
+	local package="$2"
+	local arch="$3"
+	local template
+
+	template="$(grep -F "\"${package}\"" "$manifest" | sed -n 's/.*: *"\([^"]*\)".*/\1/p' | head -n 1)"
+	[ -n "$template" ] || return 1
+	printf '%s' "$template" | sed "s/\${ARCH}/${arch}/g"
+}
+
+resolve_package_names() {
+	local arch="$1"
+	local manifest="${DOWNLOAD_DIR}/manifest.json"
+
+	PACKAGE_LISTS="$(manifest_package_name "$manifest" "lst-signbox-lists-tgbot" "$arch")"
+	[ -n "$PACKAGE_LISTS" ] || return 1
+	PACKAGE_LUCI="$(manifest_package_name "$manifest" "luci-app-lst-signbox-lists-tgbot" "$arch")"
+	[ -n "$PACKAGE_LUCI" ] || return 1
+	return 0
+}
+
+fetch_manifest() {
+	local arch="$1"
+	local dest="${DOWNLOAD_DIR}/manifest.json"
+	local manifest_url="${DIST_RAW_URL}/manifest.json"
+
+	download_file "$manifest_url" "$dest" || return 1
+	resolve_package_names "$arch"
+}
+
+release_asset_url() {
+	local api_response="$1"
+	local filename="$2"
+
+	printf '%s' "$api_response" | grep -F "$filename" | grep -o 'https://[^"[:space:]]*' | head -n 1
+}
+
+release_package_names() {
+	local arch="$1"
+	local api_response="$2"
+	local release_ver
+
+	release_ver="$(printf '%s' "$api_response" | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"v[^"]*"' | head -n 1 | sed 's/.*"v\([^"]*\)".*/\1/')"
+	[ -n "$release_ver" ] || return 1
+
+	PACKAGE_LISTS="lst-signbox-lists-tgbot_${release_ver}-r1_${arch}.ipk"
+	PACKAGE_LUCI="luci-app-lst-signbox-lists-tgbot_${release_ver}-r1_all.ipk"
+	return 0
+}
+
+fetch_from_release() {
+	local arch="$1"
+	local api_response url
+
+	api_response="$(fetch_api_response)"
+	[ -n "$api_response" ] || return 1
+	release_package_names "$arch" "$api_response" || return 1
+
+	url="$(release_asset_url "$api_response" "$PACKAGE_LISTS")"
+	[ -n "$url" ] || return 1
+	download_file "$url" "${DOWNLOAD_DIR}/${PACKAGE_LISTS}" || return 1
+
+	url="$(release_asset_url "$api_response" "$PACKAGE_LUCI")"
+	[ -n "$url" ] || return 1
+	download_file "$url" "${DOWNLOAD_DIR}/${PACKAGE_LUCI}" || return 1
+	return 0
+}
+
+fetch_from_raw() {
+	local arch="$1"
+	local base_url="${LST_SIGNBOX_LISTS_TGBOT_REPO_URL:-$FALLBACK_REPO_URL}"
+
+	log "fallback: raw packages from ${base_url}/${arch}"
+	fetch_manifest "$arch" || return 1
+	download_file "${base_url}/${arch}/${PACKAGE_LISTS}" "${DOWNLOAD_DIR}/${PACKAGE_LISTS}" || return 1
+	download_file "${base_url}/${arch}/${PACKAGE_LUCI}" "${DOWNLOAD_DIR}/${PACKAGE_LUCI}" || return 1
+	return 0
+}
+
+fetch_packages() {
+	local arch="$1"
+
+	rm -rf "$DOWNLOAD_DIR"
+	mkdir -p "$DOWNLOAD_DIR"
+
+	if fetch_from_release "$arch"; then
+		return 0
+	fi
+	if fetch_from_raw "$arch"; then
+		return 0
+	fi
+
+	die "no packages found for ${arch}"
+	return 1
+}
+
+backup_current_config() {
+	PREV_ENABLED="$(uci -q get lst-signbox-lists-tgbot.main.enabled || true)"
+	PREV_TOKEN="$(uci -q get lst-signbox-lists-tgbot.main.token || true)"
+	PREV_DOMAIN_LIST="$(uci -q get lst-signbox-lists-tgbot.main.domain_list || true)"
+	PREV_IP_LIST="$(uci -q get lst-signbox-lists-tgbot.main.ip_list || true)"
+	PREV_RESTART_CMD="$(uci -q get lst-signbox-lists-tgbot.main.restart_cmd || true)"
+	PREV_SERVICE_LABEL="$(uci -q get lst-signbox-lists-tgbot.main.service_label || true)"
+	PREV_STATE_PATH="$(uci -q get lst-signbox-lists-tgbot.main.state_path || true)"
+	PREV_LOG_PATH="$(uci -q get lst-signbox-lists-tgbot.main.log_path || true)"
+	PREV_AUTO_RESTART="$(uci -q get lst-signbox-lists-tgbot.main.auto_restart || true)"
+}
+
+restore_config() {
+	local changed=0
+
+	if [ -n "$PREV_ENABLED" ]; then
+		uci set "lst-signbox-lists-tgbot.main.enabled=${PREV_ENABLED}"
+		changed=1
+	fi
+	if [ -n "$PREV_TOKEN" ]; then
+		uci set "lst-signbox-lists-tgbot.main.token=${PREV_TOKEN}"
+		changed=1
+	fi
+	if [ -n "$PREV_DOMAIN_LIST" ]; then
+		uci set "lst-signbox-lists-tgbot.main.domain_list=${PREV_DOMAIN_LIST}"
+		changed=1
+	fi
+	if [ -n "$PREV_IP_LIST" ]; then
+		uci set "lst-signbox-lists-tgbot.main.ip_list=${PREV_IP_LIST}"
+		changed=1
+	fi
+	if [ -n "$PREV_RESTART_CMD" ]; then
+		uci set "lst-signbox-lists-tgbot.main.restart_cmd=${PREV_RESTART_CMD}"
+		changed=1
+	fi
+	if [ -n "$PREV_SERVICE_LABEL" ]; then
+		uci set "lst-signbox-lists-tgbot.main.service_label=${PREV_SERVICE_LABEL}"
+		changed=1
+	fi
+	if [ -n "$PREV_STATE_PATH" ]; then
+		uci set "lst-signbox-lists-tgbot.main.state_path=${PREV_STATE_PATH}"
+		changed=1
+	fi
+	if [ -n "$PREV_LOG_PATH" ]; then
+		uci set "lst-signbox-lists-tgbot.main.log_path=${PREV_LOG_PATH}"
+		changed=1
+	fi
+	if [ -n "$PREV_AUTO_RESTART" ]; then
+		uci set "lst-signbox-lists-tgbot.main.auto_restart=${PREV_AUTO_RESTART}"
+		changed=1
+	fi
+
+	if [ "$changed" -eq 1 ]; then
+		uci commit lst-signbox-lists-tgbot
+	fi
+}
+
+install_packages() {
+	local arch="$1" lists_ipk luci_ipk
+
+	log "updating package lists"
+	opkg update >/dev/null 2>&1 || true
+	opkg install ca-bundle wget >/dev/null 2>&1 || true
+	opkg install luci-base luci-compat >/dev/null 2>&1 || true
+
+	log "installing lst-signbox-lists-tgbot (${arch})"
+	lists_ipk="${DOWNLOAD_DIR}/${PACKAGE_LISTS}"
+	[ -f "$lists_ipk" ] || die "lst-signbox-lists-tgbot package not found"
+	opkg install --force-reinstall --force-downgrade "$lists_ipk" || die "opkg install failed for bot package"
+
+	log "installing luci-app-lst-signbox-lists-tgbot"
+	luci_ipk="${DOWNLOAD_DIR}/${PACKAGE_LUCI}"
+	[ -f "$luci_ipk" ] || die "luci-app package not found"
+	opkg install --force-reinstall --force-downgrade "$luci_ipk" || die "opkg install failed for luci package"
+	rm -f /tmp/luci-indexcache /tmp/luci-modulecache 2>/dev/null || true
+}
+
+restart_service() {
+	log "restarting lst-signbox-lists-tgbot service"
+	/etc/init.d/lst-signbox-lists-tgbot enable
+	/etc/init.d/lst-signbox-lists-tgbot restart || /etc/init.d/lst-signbox-lists-tgbot start || true
+}
+
+upgrade_running() {
+	[ -f "$LOCK" ]
+}
+
+upgrade_state() {
+	if upgrade_running; then
+		printf 'running'
+	elif [ -f "$LOG" ] && grep -q '^STATUS=success$' "$LOG" 2>/dev/null; then
+		printf 'success'
+	elif [ -f "$LOG" ] && grep -q '^STATUS=error$' "$LOG" 2>/dev/null; then
+		printf 'failed'
+	else
+		printf 'idle'
+	fi
+}
+
+json_bool() {
+	[ "$1" = "1" ] && printf 'true' || printf 'false'
+}
+
+print_version_json() {
+	local current="$1"
+	local latest="$2"
+	local update_available="$3"
+	local running="$4"
+	local state="${5:-idle}"
+
+	printf '{"current":"%s","latest":"%s","update_available":%s,"running":%s,"state":"%s"}\n' \
+		"$current" "$latest" "$(json_bool "$update_available")" "$(json_bool "$running")" "$state"
+}
+
+build_version_info() {
+	local current latest update_available running state
+
+	current="$(installed_version)"
+	latest="$(fetch_latest_version)" || latest=""
+	update_available=0
+	if [ -n "$latest" ] && [ -n "$current" ]; then
+		if ver_lt "$current" "$latest"; then
+			update_available=1
+		fi
+	fi
+	running=0
+	upgrade_running && running=1
+	state="$(upgrade_state)"
+	print_version_json "$current" "$latest" "$update_available" "$running" "$state"
+}
+
+cmd_check() {
+	need_root || exit 1
+	build_version_info
+}
+
+cmd_status() {
+	need_root || exit 1
+	build_version_info
+}
+
+upgrade_main() {
+	local arch
+
+	need_root || return 1
+	need_openwrt || return 1
+	arch="$(detect_arch)"
+	log "router arch: ${arch}"
+
+	backup_current_config
+	fetch_packages "$arch" || return 1
+	install_packages "$arch" || return 1
+	restore_config
+	restart_service
+	rm -rf "$DOWNLOAD_DIR"
+	log "upgrade finished"
+	return 0
+}
+
+cmd_start() {
+	need_root || exit 1
+
+	if upgrade_running; then
+		printf '{"error":"already_running"}\n'
+		return 1
+	fi
+
+	: > "$LOG"
+	(
+		trap 'rm -f "$LOCK"' EXIT
+		touch "$LOCK"
+		if upgrade_main; then
+			echo "STATUS=success"
+		else
+			echo "STATUS=error"
+		fi
+	) >> "$LOG" 2>&1 &
+
+	printf '{"started":true}\n'
+}
+
+usage() {
+	echo "Usage: $0 check|start|status" >&2
+	exit 1
+}
+
+case "${1:-}" in
+	check)  cmd_check ;;
+	start)  cmd_start ;;
+	status) cmd_status ;;
+	*)      usage ;;
+esac
