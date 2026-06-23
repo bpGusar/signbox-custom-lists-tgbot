@@ -24,6 +24,7 @@ type App struct {
 }
 
 const (
+	menuCbPrefix           = "m:"
 	menuBtnMainMenu        = "🏠 Главное меню"
 	menuBtnDownloadIP      = "📥 Скачать IP"
 	menuBtnDownloadDomains = "📥 Скачать домены"
@@ -69,6 +70,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	b.RegisterHandler(tgbot.HandlerTypeMessageText, "/menu", tgbot.MatchTypeExact, app.handleShowMenu)
 	b.RegisterHandler(tgbot.HandlerTypeMessageText, "/hide", tgbot.MatchTypeExact, app.handleHideKeyboard)
 	b.RegisterHandler(tgbot.HandlerTypeCallbackQueryData, "s:", tgbot.MatchTypePrefix, app.handleCallback)
+	b.RegisterHandler(tgbot.HandlerTypeCallbackQueryData, menuCbPrefix, tgbot.MatchTypePrefix, app.handleMenuCallback)
 
 	log.Println("lst-signbox-lists-tgbot started")
 	b.Start(ctx)
