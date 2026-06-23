@@ -140,3 +140,18 @@ func TestMainMenuInlineKeyboard_withRestartAndPodkop(t *testing.T) {
 		t.Fatalf("expected restart and podkop buttons, got %v", texts)
 	}
 }
+
+func TestBackToMainMenuInlineKeyboard(t *testing.T) {
+	app := &App{}
+	kb := app.backToMainMenuInlineKeyboard()
+	if len(kb.InlineKeyboard) != 1 || len(kb.InlineKeyboard[0]) != 1 {
+		t.Fatalf("expected single back button, got %#v", kb.InlineKeyboard)
+	}
+	btn := kb.InlineKeyboard[0][0]
+	if btn.Text != menuBtnMainMenu {
+		t.Fatalf("expected %q, got %q", menuBtnMainMenu, btn.Text)
+	}
+	if btn.CallbackData != menuCbPrefix+"main_menu" {
+		t.Fatalf("expected main_menu callback, got %q", btn.CallbackData)
+	}
+}

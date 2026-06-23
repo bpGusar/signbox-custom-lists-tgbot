@@ -189,6 +189,14 @@ func (a *App) mainMenuInlineKeyboard() *models.InlineKeyboardMarkup {
 	return &models.InlineKeyboardMarkup{InlineKeyboard: rows}
 }
 
+func (a *App) backToMainMenuInlineKeyboard() *models.InlineKeyboardMarkup {
+	return &models.InlineKeyboardMarkup{
+		InlineKeyboard: [][]models.InlineKeyboardButton{
+			{{Text: menuBtnMainMenu, CallbackData: menuCbPrefix + "main_menu"}},
+		},
+	}
+}
+
 func (a *App) handleMenuAction(ctx context.Context, b *tgbot.Bot, chatID int64, text string) bool {
 	if strings.EqualFold(strings.TrimSpace(text), menuBtnMainMenu) {
 		a.logf(chatID, "menu main")
@@ -225,7 +233,14 @@ func (a *App) handleMenuCallback(ctx context.Context, b *tgbot.Bot, update *mode
 		a.sendListContent(ctx, b, chatID, a.cfg.DomainList, "список доменов")
 	case "check_podkop":
 		a.logf(chatID, "menu check_podkop")
-		a.sendPodkopIntegrationCheck(ctx, b, chatID)
+		text, ok := a.podkopIntegrationText(ctx)
+		if !ok {
+			text = "ℹ️ Проверка интеграции доступна только для podkop."
+		}
+		a.editCallbackMessageMarkup(ctx, b, update, text, a.backToMainMenuInlineKeyboard())
+	case "main_menu":
+		a.logf(chatID, "menu main_inline")
+		a.editCallbackMessageMarkup(ctx, b, update, a.welcomeText(ctx), a.mainMenuInlineKeyboard())
 	case "restart":
 		if a.cfg.RestartCmd != "" {
 			a.logf(chatID, "menu restart")
@@ -310,19 +325,23 @@ func (a *App) sendLongText(ctx context.Context, b *tgbot.Bot, chatID int64, text
 	}
 }
 
-func (a *App) sendPodkopIntegrationCheck(ctx context.Context, b *tgbot.Bot, chatID int64) {
-	text, ok := a.podkopIntegrationText(ctx)
-	if !ok {
-		_, _ = b.SendMessage(ctx, &tgbot.SendMessageParams{
-			ChatID: chatID,
-			Text:   "ℹ️ Проверка интеграции доступна только для podkop.",
-		})
-		return
+func (a *App) editCallbackMessageMarkup(ctx context.Context, b *tgbot.Bot, update *models.Update, text string, kb *models.InlineKeyboardMarkup) {
+	if banner := a.svc.StaleBanner(); banner != "" && !strings.Contains(text, "⚠️") {
+		text = banner + "\n\n" + text
+		if reason := a.restartHiddenReason(); reason != "" {
+			text += "\n\n" + reason
+		}
 	}
-	_, _ = b.SendMessage(ctx, &tgbot.SendMessageParams{
-		ChatID: chatID,
-		Text:   text,
-	})
+
+	params := &tgbot.EditMessageTextParams{
+		ChatID:    update.CallbackQuery.Message.Message.Chat.ID,
+		MessageID: update.CallbackQuery.Message.Message.ID,
+		Text:      text,
+	}
+	if kb != nil {
+		params.ReplyMarkup = kb
+	}
+	_, _ = b.EditMessageText(ctx, params)
 }
 
 func (a *App) handleListInput(ctx context.Context, b *tgbot.Bot, update *models.Update) {
@@ -945,21 +964,5 @@ func (a *App) answerAndEditMarkup(ctx context.Context, b *tgbot.Bot, update *mod
 	_, _ = b.AnswerCallbackQuery(ctx, &tgbot.AnswerCallbackQueryParams{
 		CallbackQueryID: update.CallbackQuery.ID,
 	})
-
-	if banner := a.svc.StaleBanner(); banner != "" && !strings.Contains(text, "⚠️") {
-		text = banner + "\n\n" + text
-		if reason := a.restartHiddenReason(); reason != "" {
-			text += "\n\n" + reason
-		}
-	}
-
-	params := &tgbot.EditMessageTextParams{
-		ChatID:    update.CallbackQuery.Message.Message.Chat.ID,
-		MessageID: update.CallbackQuery.Message.Message.ID,
-		Text:      text,
-	}
-	if kb != nil {
-		params.ReplyMarkup = kb
-	}
-	_, _ = b.EditMessageText(ctx, params)
+	a.editCallbackMessageMarkup(ctx, b, update, text, kb)
 }
