@@ -1,6 +1,10 @@
 package bot
 
-import "testing"
+import (
+	"testing"
+
+	"lst-signbox-lists-tgbot/internal/config"
+)
 
 func keyboardTexts(t *testing.T, opID string, newVals, active, disabled []string) []string {
 	t.Helper()
@@ -85,5 +89,54 @@ func TestBuildListInputKeyboard_onlyActive(t *testing.T) {
 	}
 	if !containsNone(texts, "➕ Добавить", "✅ Включить", "➕ Добавить всё") {
 		t.Fatalf("unexpected buttons: %v", texts)
+	}
+}
+
+func TestReplyKeyboard_onlyMainMenu(t *testing.T) {
+	app := &App{}
+	kb := app.replyKeyboard()
+	if len(kb.Keyboard) != 1 || len(kb.Keyboard[0]) != 1 {
+		t.Fatalf("expected single main menu button, got %#v", kb.Keyboard)
+	}
+	if kb.Keyboard[0][0].Text != menuBtnMainMenu {
+		t.Fatalf("expected %q, got %q", menuBtnMainMenu, kb.Keyboard[0][0].Text)
+	}
+}
+
+func TestMainMenuInlineKeyboard_baseActions(t *testing.T) {
+	app := &App{cfg: &config.Config{}}
+	kb := app.mainMenuInlineKeyboard()
+	var texts []string
+	for _, row := range kb.InlineKeyboard {
+		for _, btn := range row {
+			texts = append(texts, btn.Text)
+		}
+	}
+	want := []string{
+		menuBtnDownloadIP, menuBtnDownloadDomains,
+		menuBtnViewIP, menuBtnViewDomains,
+	}
+	if !containsAll(texts, want...) {
+		t.Fatalf("expected base menu buttons, got %v", texts)
+	}
+	if !containsNone(texts, menuBtnMainMenu, menuBtnCheckPodkop) {
+		t.Fatalf("unexpected buttons in inline menu: %v", texts)
+	}
+}
+
+func TestMainMenuInlineKeyboard_withRestartAndPodkop(t *testing.T) {
+	app := &App{cfg: &config.Config{
+		RestartCmd:   "/etc/init.d/podkop restart",
+		ServiceLabel: "Podkop",
+	}}
+	kb := app.mainMenuInlineKeyboard()
+	var texts []string
+	for _, row := range kb.InlineKeyboard {
+		for _, btn := range row {
+			texts = append(texts, btn.Text)
+		}
+	}
+	if !containsAll(texts, app.menuBtnRestart(), menuBtnCheckPodkop) {
+		t.Fatalf("expected restart and podkop buttons, got %v", texts)
 	}
 }

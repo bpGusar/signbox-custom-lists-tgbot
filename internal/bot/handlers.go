@@ -43,14 +43,18 @@ func (a *App) sendStartCheck(ctx context.Context, b *tgbot.Bot, chatID int64) {
 		return
 	}
 
+	wasReady := a.ready[chatID]
 	a.ready[chatID] = true
 	a.logf(chatID, "start_check ready=true")
 	text := a.welcomeText(ctx)
 	_, _ = b.SendMessage(ctx, &tgbot.SendMessageParams{
 		ChatID:      chatID,
 		Text:        text,
-		ReplyMarkup: a.mainMenuKeyboard(),
+		ReplyMarkup: a.mainMenuInlineKeyboard(),
 	})
+	if !wasReady {
+		a.ensureReplyKeyboard(ctx, b, chatID)
+	}
 }
 
 func (a *App) welcomeText(ctx context.Context) string {
@@ -109,8 +113,9 @@ func (a *App) handleShowMenu(ctx context.Context, b *tgbot.Bot, update *models.U
 	_, _ = b.SendMessage(ctx, &tgbot.SendMessageParams{
 		ChatID:      chatID,
 		Text:        "⌨️ Меню",
-		ReplyMarkup: a.mainMenuKeyboard(),
+		ReplyMarkup: a.mainMenuInlineKeyboard(),
 	})
+	a.ensureReplyKeyboard(ctx, b, chatID)
 }
 
 func (a *App) handleHideKeyboard(ctx context.Context, b *tgbot.Bot, update *models.Update) {
@@ -141,66 +146,91 @@ func (a *App) restartHiddenReason() string {
 	return ""
 }
 
-func (a *App) mainMenuKeyboard() *models.ReplyKeyboardMarkup {
-	rows := [][]models.KeyboardButton{
-		{
-			{Text: menuBtnMainMenu},
-		},
-		{
-			{Text: menuBtnDownloadIP},
-			{Text: menuBtnDownloadDomains},
-		},
-		{
-			{Text: menuBtnViewIP},
-			{Text: menuBtnViewDomains},
-		},
-	}
-	if a.cfg.RestartCmd != "" {
-		rows = append(rows, []models.KeyboardButton{{Text: a.menuBtnRestart()}})
-	}
-	if isPodkopCommand(a.cfg.RestartCmd) {
-		rows = append(rows, []models.KeyboardButton{{Text: menuBtnCheckPodkop}})
-	}
+func (a *App) replyKeyboard() *models.ReplyKeyboardMarkup {
 	return &models.ReplyKeyboardMarkup{
-		Keyboard:              rows,
+		Keyboard: [][]models.KeyboardButton{
+			{{Text: menuBtnMainMenu}},
+		},
 		ResizeKeyboard:        true,
 		InputFieldPlaceholder: "домены или IP/CIDR",
 	}
 }
 
+func (a *App) ensureReplyKeyboard(ctx context.Context, b *tgbot.Bot, chatID int64) {
+	_, _ = b.SendMessage(ctx, &tgbot.SendMessageParams{
+		ChatID:              chatID,
+		Text:                "\u200b",
+		ReplyMarkup:         a.replyKeyboard(),
+		DisableNotification: true,
+	})
+}
+
+func (a *App) mainMenuInlineKeyboard() *models.InlineKeyboardMarkup {
+	rows := [][]models.InlineKeyboardButton{
+		{
+			{Text: menuBtnDownloadIP, CallbackData: menuCbPrefix + "download_ip"},
+			{Text: menuBtnDownloadDomains, CallbackData: menuCbPrefix + "download_domains"},
+		},
+		{
+			{Text: menuBtnViewIP, CallbackData: menuCbPrefix + "view_ip"},
+			{Text: menuBtnViewDomains, CallbackData: menuCbPrefix + "view_domains"},
+		},
+	}
+	if a.cfg.RestartCmd != "" {
+		rows = append(rows, []models.InlineKeyboardButton{{
+			Text: a.menuBtnRestart(), CallbackData: menuCbPrefix + "restart",
+		}})
+	}
+	if isPodkopCommand(a.cfg.RestartCmd) {
+		rows = append(rows, []models.InlineKeyboardButton{{
+			Text: menuBtnCheckPodkop, CallbackData: menuCbPrefix + "check_podkop",
+		}})
+	}
+	return &models.InlineKeyboardMarkup{InlineKeyboard: rows}
+}
+
 func (a *App) handleMenuAction(ctx context.Context, b *tgbot.Bot, chatID int64, text string) bool {
-	switch strings.ToLower(strings.TrimSpace(text)) {
-	case strings.ToLower(menuBtnMainMenu):
+	if strings.EqualFold(strings.TrimSpace(text), menuBtnMainMenu) {
 		a.logf(chatID, "menu main")
 		a.sendStartCheck(ctx, b, chatID)
 		return true
-	case strings.ToLower(menuBtnDownloadIP):
+	}
+	return false
+}
+
+func (a *App) handleMenuCallback(ctx context.Context, b *tgbot.Bot, update *models.Update) {
+	if update.CallbackQuery == nil {
+		return
+	}
+
+	chatID := update.CallbackQuery.Message.Message.Chat.ID
+	action := strings.TrimPrefix(update.CallbackQuery.Data, menuCbPrefix)
+
+	_, _ = b.AnswerCallbackQuery(ctx, &tgbot.AnswerCallbackQueryParams{
+		CallbackQueryID: update.CallbackQuery.ID,
+	})
+
+	switch action {
+	case "download_ip":
 		a.logf(chatID, "menu download_ip")
 		a.sendListFile(ctx, b, chatID, a.cfg.IPList, "ip_list.lst", "IP-список")
-		return true
-	case strings.ToLower(menuBtnDownloadDomains):
+	case "download_domains":
 		a.logf(chatID, "menu download_domains")
 		a.sendListFile(ctx, b, chatID, a.cfg.DomainList, "domain_list.lst", "список доменов")
-		return true
-	case strings.ToLower(menuBtnViewIP):
+	case "view_ip":
 		a.logf(chatID, "menu view_ip")
 		a.sendListContent(ctx, b, chatID, a.cfg.IPList, "IP-список")
-		return true
-	case strings.ToLower(menuBtnViewDomains):
+	case "view_domains":
 		a.logf(chatID, "menu view_domains")
 		a.sendListContent(ctx, b, chatID, a.cfg.DomainList, "список доменов")
-		return true
-	case strings.ToLower(menuBtnCheckPodkop):
+	case "check_podkop":
 		a.logf(chatID, "menu check_podkop")
 		a.sendPodkopIntegrationCheck(ctx, b, chatID)
-		return true
-	default:
-		if a.cfg.RestartCmd != "" && strings.EqualFold(strings.TrimSpace(text), a.menuBtnRestart()) {
+	case "restart":
+		if a.cfg.RestartCmd != "" {
 			a.logf(chatID, "menu restart")
 			a.runRestartNotify(ctx, b, chatID)
-			return true
 		}
-		return false
 	}
 }
 
@@ -630,7 +660,8 @@ func (a *App) handleStartCreate(ctx context.Context, b *tgbot.Bot, update *model
 	}
 	a.ready[chatID] = true
 	a.logf(chatID, "create_files_success domain=%q ip=%q", a.cfg.DomainList, a.cfg.IPList)
-	a.answerAndEdit(ctx, b, update, a.welcomeText(ctx))
+	a.answerAndEditMarkup(ctx, b, update, a.welcomeText(ctx), a.mainMenuInlineKeyboard())
+	a.ensureReplyKeyboard(ctx, b, chatID)
 }
 
 func (a *App) afterAddSuccess(ctx context.Context, b *tgbot.Bot, update *models.Update, chatID int64, msg string) {
