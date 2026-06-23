@@ -11,6 +11,9 @@ var LOG_POLL_INTERVAL = 3;
 var UPGRADE_SCRIPT = '/usr/sbin/lst-signbox-lists-tgbot-upgrade';
 var UPGRADE_LOG_PATH = '/tmp/lst-signbox-lists-tgbot-upgrade.log';
 var UPGRADE_POLL_INTERVAL = 2;
+var UCI_PACKAGE = 'lst-signbox-lists-tgbot';
+var UCI_SECTION = 'main';
+var UCI_LOG_AUTO_REFRESH = 'log_auto_refresh';
 
 var logTextarea = null;
 var pollLogFn = null;
@@ -65,6 +68,25 @@ function setAutoRefresh(enabled) {
 	} else {
 		poll.remove(pollLogFn);
 	}
+}
+
+function parseStoredFlag(value, fallback) {
+	if (value == null || value === '')
+		return fallback;
+
+	value = String(value).toLowerCase();
+	return value === '1' || value === 'true' || value === 'yes' || value === 'on';
+}
+
+function loadAutoRefreshSetting() {
+	return parseStoredFlag(uci.get(UCI_PACKAGE, UCI_SECTION, UCI_LOG_AUTO_REFRESH), true);
+}
+
+function persistAutoRefreshSetting(enabled) {
+	uci.set(UCI_PACKAGE, UCI_SECTION, UCI_LOG_AUTO_REFRESH, enabled ? '1' : '0');
+	return uci.save().then(function () {
+		return uci.commit(UCI_PACKAGE);
+	});
 }
 
 function parseUpgradeJson(res) {
@@ -316,7 +338,17 @@ function buildLogSection() {
 						'type': 'checkbox',
 						'checked': autoRefresh ? 'checked' : null,
 						'change': function (ev) {
-							setAutoRefresh(ev.target.checked);
+							var enabled = !!ev.target.checked;
+							var prev = autoRefresh;
+
+							setAutoRefresh(enabled);
+							persistAutoRefreshSetting(enabled).catch(function () {
+								setAutoRefresh(prev);
+								ev.target.checked = prev;
+								ui.addNotification(null, E('p', {}, _(
+									'Failed to save auto-refresh setting. Reverted to previous value.'
+								)), 'danger');
+							});
 						}
 					}),
 					' ',
@@ -346,7 +378,9 @@ return view.extend({
 	render: function () {
 		var m, s, o, logSection, upgradeSection;
 
-		m = new form.Map('lst-signbox-lists-tgbot', _('Lists Telegram Bot'), _(
+		autoRefresh = loadAutoRefreshSetting();
+
+		m = new form.Map(UCI_PACKAGE, _('Lists Telegram Bot'), _(
 			'Telegram bot for managing domain and IP/CIDR list files.'
 		));
 

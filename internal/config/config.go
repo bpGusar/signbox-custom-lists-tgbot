@@ -128,6 +128,40 @@ func uciGet(section, option string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
+func uciSet(section, option, value string) error {
+	key := fmt.Sprintf("%s.%s.%s=%s", uciPackage, section, option, value)
+	return exec.Command("uci", "set", key).Run()
+}
+
+func uciCommit() error {
+	return exec.Command("uci", "commit", uciPackage).Run()
+}
+
+func usesEnvConfig() bool {
+	return os.Getenv("LST_SIGNBOX_LISTS_TGBOT_TOKEN") != "" || os.Getenv("LISTS_TG_TOKEN") != ""
+}
+
+func (c *Config) SetAutoRestart(enabled bool) error {
+	prev := c.AutoRestart
+	c.AutoRestart = enabled
+	if usesEnvConfig() {
+		return nil
+	}
+	val := "0"
+	if enabled {
+		val = "1"
+	}
+	if err := uciSet("main", "auto_restart", val); err != nil {
+		c.AutoRestart = prev
+		return fmt.Errorf("uci set auto_restart: %w", err)
+	}
+	if err := uciCommit(); err != nil {
+		c.AutoRestart = prev
+		return fmt.Errorf("uci commit: %w", err)
+	}
+	return nil
+}
+
 func ParseBool(s string) bool {
 	b, _ := strconv.ParseBool(s)
 	return b || s == "1"

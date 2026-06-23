@@ -107,6 +107,25 @@ func (a *App) menuBtnRestart() string {
 	return "🔄 Перезапустить " + a.cfg.ServiceLabel
 }
 
+func (a *App) menuBtnAutoRestart() string {
+	if a.cfg.AutoRestart {
+		return "✅ Автоперезапуск: вкл"
+	}
+	return "⏸ Автоперезапуск: выкл"
+}
+
+func (a *App) settingsMenuText() string {
+	text := menuBtnSettings
+	if a.cfg.RestartCmd != "" {
+		status := "выкл"
+		if a.cfg.AutoRestart {
+			status = "вкл"
+		}
+		text += fmt.Sprintf("\n\nАвтоперезапуск %s после изменения списков: %s", a.cfg.ServiceLabel, status)
+	}
+	return text
+}
+
 func (a *App) handleShowMenu(ctx context.Context, b *tgbot.Bot, update *models.Update) {
 	chatID := update.Message.Chat.ID
 	a.logf(chatID, "command=/menu")
@@ -194,6 +213,9 @@ func (a *App) settingsMenuInlineKeyboard() *models.InlineKeyboardMarkup {
 		rows = append(rows, []models.InlineKeyboardButton{{
 			Text: a.menuBtnRestart(), CallbackData: menuCbPrefix + "restart",
 		}})
+		rows = append(rows, []models.InlineKeyboardButton{{
+			Text: a.menuBtnAutoRestart(), CallbackData: menuCbPrefix + "toggle_auto_restart",
+		}})
 	}
 	if isPodkopCommand(a.cfg.RestartCmd) {
 		rows = append(rows, []models.InlineKeyboardButton{{
@@ -273,7 +295,21 @@ func (a *App) handleMenuCallback(ctx context.Context, b *tgbot.Bot, update *mode
 		a.editCallbackMessageMarkup(ctx, b, update, text, a.backToSettingsInlineKeyboard())
 	case "settings":
 		a.logf(chatID, "menu settings")
-		a.editCallbackMessageMarkup(ctx, b, update, menuBtnSettings, a.settingsMenuInlineKeyboard())
+		a.editCallbackMessageMarkup(ctx, b, update, a.settingsMenuText(), a.settingsMenuInlineKeyboard())
+	case "toggle_auto_restart":
+		if a.cfg.RestartCmd == "" {
+			break
+		}
+		newVal := !a.cfg.AutoRestart
+		if err := a.cfg.SetAutoRestart(newVal); err != nil {
+			a.logf(chatID, "toggle_auto_restart error err=%v", err)
+			a.editCallbackMessageMarkup(ctx, b, update,
+				a.settingsMenuText()+"\n\n❌ Не удалось сохранить: "+err.Error(),
+				a.settingsMenuInlineKeyboard())
+			break
+		}
+		a.logf(chatID, "toggle_auto_restart enabled=%t", newVal)
+		a.editCallbackMessageMarkup(ctx, b, update, a.settingsMenuText(), a.settingsMenuInlineKeyboard())
 	case "main_menu":
 		a.logf(chatID, "menu main_inline")
 		a.editCallbackMessageMarkup(ctx, b, update, a.welcomeText(ctx), a.mainMenuInlineKeyboard())
