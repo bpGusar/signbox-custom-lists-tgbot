@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"strings"
 	"testing"
 
 	"lst-signbox-lists-tgbot/internal/config"
@@ -156,8 +157,8 @@ func TestSettingsMenuInlineKeyboard_withRestartAndPodkop(t *testing.T) {
 			texts = append(texts, btn.Text)
 		}
 	}
-	if !containsAll(texts, app.menuBtnRestart(), menuBtnCheckPodkop, menuBtnMainMenu) {
-		t.Fatalf("expected restart, podkop and main menu buttons, got %v", texts)
+	if !containsAll(texts, app.menuBtnRestart(), app.menuBtnAutoRestart(), menuBtnCheckPodkop, menuBtnMainMenu) {
+		t.Fatalf("expected restart, auto restart, podkop and main menu buttons, got %v", texts)
 	}
 }
 
@@ -173,11 +174,34 @@ func TestSettingsMenuInlineKeyboard_singBoxOnlyRestart(t *testing.T) {
 			texts = append(texts, btn.Text)
 		}
 	}
-	if !containsAll(texts, app.menuBtnRestart(), menuBtnMainMenu) {
-		t.Fatalf("expected restart and main menu buttons, got %v", texts)
+	if !containsAll(texts, app.menuBtnRestart(), app.menuBtnAutoRestart(), menuBtnMainMenu) {
+		t.Fatalf("expected restart, auto restart and main menu buttons, got %v", texts)
 	}
 	if !containsNone(texts, menuBtnCheckPodkop) {
 		t.Fatalf("podkop check should not appear for sing-box, got %v", texts)
+	}
+}
+
+func TestMenuBtnAutoRestart_states(t *testing.T) {
+	on := &App{cfg: &config.Config{AutoRestart: true}}
+	if on.menuBtnAutoRestart() != "✅ Автоперезапуск: вкл" {
+		t.Fatalf("unexpected on label: %q", on.menuBtnAutoRestart())
+	}
+	off := &App{cfg: &config.Config{AutoRestart: false}}
+	if off.menuBtnAutoRestart() != "⏸ Автоперезапуск: выкл" {
+		t.Fatalf("unexpected off label: %q", off.menuBtnAutoRestart())
+	}
+}
+
+func TestSettingsMenuText_autoRestartStatus(t *testing.T) {
+	app := &App{cfg: &config.Config{
+		RestartCmd:   "/etc/init.d/podkop restart",
+		ServiceLabel: "podkop",
+		AutoRestart:  true,
+	}}
+	text := app.settingsMenuText()
+	if !strings.Contains(text, "Автоперезапуск podkop после изменения списков: вкл") {
+		t.Fatalf("unexpected settings text: %q", text)
 	}
 }
 
