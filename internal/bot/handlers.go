@@ -795,11 +795,13 @@ func (a *App) runRestartNotify(parentCtx context.Context, b *tgbot.Bot, chatID i
 
 	start := time.Now()
 	res := service.RunRestartWithProgress(rctx, a.cfg.RestartCmd, func(elapsed time.Duration) {
-		_, _ = b.EditMessageText(rctx, &tgbot.EditMessageTextParams{
+		if _, err := b.EditMessageText(rctx, &tgbot.EditMessageTextParams{
 			ChatID:    chatID,
 			MessageID: messageID,
 			Text:      fmt.Sprintf("Перезапуск %s… (%ds)", label, int(elapsed.Seconds())),
-		})
+		}); err != nil {
+			a.logf(chatID, "restart progress_edit_error err=%v", err)
+		}
 	})
 
 	text := a.formatRestartResult(rctx, chatID, res, label, int(time.Since(start).Seconds()))
@@ -814,11 +816,36 @@ func (a *App) runRestartNotify(parentCtx context.Context, b *tgbot.Bot, chatID i
 		a.logf(chatID, "restart failed err=%q", errText)
 	}
 
-	_, _ = b.EditMessageText(rctx, &tgbot.EditMessageTextParams{
-		ChatID:    chatID,
-		MessageID: messageID,
-		Text:      text,
-	})
+	a.editOrResend(context.Background(), b, chatID, messageID, text)
+}
+
+// editOrResend updates the status message, retrying on transient network errors.
+// If all retries fail, it sends a new message so the final result is not silently lost.
+func (a *App) editOrResend(ctx context.Context, b *tgbot.Bot, chatID int64, messageID int, text string) {
+	const attempts = 3
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		if i > 0 {
+			time.Sleep(time.Duration(i) * time.Second)
+		}
+		if _, err := b.EditMessageText(ctx, &tgbot.EditMessageTextParams{
+			ChatID:    chatID,
+			MessageID: messageID,
+			Text:      text,
+		}); err != nil {
+			lastErr = err
+			a.logf(chatID, "restart result_edit_error attempt=%d err=%v", i+1, err)
+			continue
+		}
+		return
+	}
+	a.logf(chatID, "restart result_edit_failed err=%v fallback=send_new_message", lastErr)
+	if _, err := b.SendMessage(ctx, &tgbot.SendMessageParams{
+		ChatID: chatID,
+		Text:   text,
+	}); err != nil {
+		a.logf(chatID, "restart result_send_error err=%v", err)
+	}
 }
 
 func (a *App) formatRestartResult(ctx context.Context, chatID int64, res service.RestartResult, label string, durationSec int) string {
