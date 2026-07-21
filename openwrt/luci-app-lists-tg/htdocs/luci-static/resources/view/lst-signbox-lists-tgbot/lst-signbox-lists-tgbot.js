@@ -85,7 +85,7 @@ function loadAutoRefreshSetting() {
 function persistAutoRefreshSetting(enabled) {
 	uci.set(UCI_PACKAGE, UCI_SECTION, UCI_LOG_AUTO_REFRESH, enabled ? '1' : '0');
 	return uci.save().then(function () {
-		return uci.commit(UCI_PACKAGE);
+		return uci.apply();
 	});
 }
 
@@ -263,7 +263,13 @@ function buildUpgradeSection() {
 		'class': 'btn cbi-button-action',
 		'type': 'button',
 		'click': function () {
-			runUpgradeCheck().then(fetchUpgradeLog);
+			upgradeCheckBtn.disabled = true;
+			if (upgradeStatusEl)
+				upgradeStatusEl.textContent = _('Checking for updates...');
+
+			return runUpgradeCheck().then(fetchUpgradeLog).finally(function () {
+				upgradeCheckBtn.disabled = false;
+			});
 		}
 	}, _('Check for updates'));
 

@@ -183,22 +183,24 @@ func TestSettingsMenuInlineKeyboard_singBoxOnlyRestart(t *testing.T) {
 }
 
 func TestMenuBtnAutoRestart_states(t *testing.T) {
-	on := &App{cfg: &config.Config{AutoRestart: true}}
+	on := &App{cfg: &config.Config{}}
+	on.cfg.SetAutoRestartValue(true)
 	if on.menuBtnAutoRestart() != "✅ Автоперезапуск: вкл" {
 		t.Fatalf("unexpected on label: %q", on.menuBtnAutoRestart())
 	}
-	off := &App{cfg: &config.Config{AutoRestart: false}}
+	off := &App{cfg: &config.Config{}}
 	if off.menuBtnAutoRestart() != "⏸ Автоперезапуск: выкл" {
 		t.Fatalf("unexpected off label: %q", off.menuBtnAutoRestart())
 	}
 }
 
 func TestSettingsMenuText_autoRestartStatus(t *testing.T) {
-	app := &App{cfg: &config.Config{
+	cfg := &config.Config{
 		RestartCmd:   "/etc/init.d/podkop restart",
 		ServiceLabel: "podkop",
-		AutoRestart:  true,
-	}}
+	}
+	cfg.SetAutoRestartValue(true)
+	app := &App{cfg: cfg}
 	text := app.settingsMenuText()
 	if !strings.Contains(text, "Автоперезапуск podkop после изменения списков: вкл") {
 		t.Fatalf("unexpected settings text: %q", text)
