@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 
 	tgbot "github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
@@ -19,8 +20,21 @@ type App struct {
 	cfg        *config.Config
 	svc        *service.Manager
 	sess       *SessionStore
+	readyMu    sync.Mutex
 	ready      map[int64]bool
 	verChecker *version.Checker
+}
+
+func (a *App) isReady(chatID int64) bool {
+	a.readyMu.Lock()
+	defer a.readyMu.Unlock()
+	return a.ready[chatID]
+}
+
+func (a *App) setReady(chatID int64, ready bool) {
+	a.readyMu.Lock()
+	defer a.readyMu.Unlock()
+	a.ready[chatID] = ready
 }
 
 const (
@@ -54,11 +68,12 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	}
 	log.Printf(
 		"lst-signbox-lists-tgbot init: version=%s domain_list=%s ip_list=%s restart_cmd_set=%t auto_restart=%t state_path=%s",
-		version.Display(), cfg.DomainList, cfg.IPList, cfg.RestartCmd != "", cfg.AutoRestart, cfg.StatePath,
+		version.Display(), cfg.DomainList, cfg.IPList, cfg.RestartCmd != "", cfg.GetAutoRestart(), cfg.StatePath,
 	)
 
 	opts := []tgbot.Option{
 		tgbot.WithDefaultHandler(app.defaultHandler),
+		tgbot.WithMiddlewares(app.authMiddleware),
 	}
 
 	b, err := tgbot.New(cfg.Token, opts...)
@@ -100,12 +115,65 @@ func (a *App) defaultHandler(ctx context.Context, b *tgbot.Bot, update *models.U
 	}
 
 	chatID := update.Message.Chat.ID
-	if !a.ready[chatID] {
+	if !a.isReady(chatID) {
 		a.sendStartCheck(ctx, b, chatID)
 		return
 	}
 
 	a.handleListInput(ctx, b, update)
+}
+
+// updateChatID extracts the chat ID an update belongs to, if any.
+func updateChatID(update *models.Update) (int64, bool) {
+	if update.Message != nil {
+		return update.Message.Chat.ID, true
+	}
+	if update.CallbackQuery != nil && update.CallbackQuery.Message.Message != nil {
+		return update.CallbackQuery.Message.Message.Chat.ID, true
+	}
+	return 0, false
+}
+
+// authMiddleware restricts the bot to a single owner chat, since the bot has
+// no per-user permission model: whoever can message it can rewrite the
+// domain/IP lists and trigger service restarts. The first chat to interact
+// with the bot (fresh install, or after an upgrade from a version that
+// predates this check) is claimed as the owner and persisted in state.json;
+// every other chat is rejected until owner_chat_id is cleared there.
+func (a *App) authMiddleware(next tgbot.HandlerFunc) tgbot.HandlerFunc {
+	return func(ctx context.Context, b *tgbot.Bot, update *models.Update) {
+		chatID, ok := updateChatID(update)
+		if !ok {
+			next(ctx, b, update)
+			return
+		}
+
+		owner, isOwner, err := a.svc.ClaimOrCheckOwner(chatID)
+		if err != nil {
+			a.logf(chatID, "owner_check_error err=%v", err)
+			// Fail closed: the owner check is a security boundary, so an
+			// unreadable/unwritable state file must not open the bot up.
+			return
+		}
+		if !isOwner {
+			a.logf(chatID, "access_denied owner_chat_id=%d", owner)
+			if update.CallbackQuery != nil {
+				_, _ = b.AnswerCallbackQuery(ctx, &tgbot.AnswerCallbackQueryParams{
+					CallbackQueryID: update.CallbackQuery.ID,
+					Text:            "🔒 Бот уже привязан к другому пользователю.",
+					ShowAlert:       true,
+				})
+				return
+			}
+			_, _ = b.SendMessage(ctx, &tgbot.SendMessageParams{
+				ChatID: chatID,
+				Text:   "🔒 Этот бот уже привязан к другому пользователю.",
+			})
+			return
+		}
+
+		next(ctx, b, update)
+	}
 }
 
 func isStartCommand(text string) bool {

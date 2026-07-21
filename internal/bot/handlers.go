@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	tgbot "github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
@@ -43,8 +44,8 @@ func (a *App) sendStartCheck(ctx context.Context, b *tgbot.Bot, chatID int64) {
 		return
 	}
 
-	wasReady := a.ready[chatID]
-	a.ready[chatID] = true
+	wasReady := a.isReady(chatID)
+	a.setReady(chatID, true)
 	a.logf(chatID, "start_check ready=true")
 	text := a.welcomeText(ctx)
 	_, _ = b.SendMessage(ctx, &tgbot.SendMessageParams{
@@ -108,7 +109,7 @@ func (a *App) menuBtnRestart() string {
 }
 
 func (a *App) menuBtnAutoRestart() string {
-	if a.cfg.AutoRestart {
+	if a.cfg.GetAutoRestart() {
 		return "✅ Автоперезапуск: вкл"
 	}
 	return "⏸ Автоперезапуск: выкл"
@@ -118,7 +119,7 @@ func (a *App) settingsMenuText() string {
 	text := menuBtnSettings
 	if a.cfg.RestartCmd != "" {
 		status := "выкл"
-		if a.cfg.AutoRestart {
+		if a.cfg.GetAutoRestart() {
 			status = "вкл"
 		}
 		text += fmt.Sprintf("\n\nАвтоперезапуск %s после изменения списков: %s", a.cfg.ServiceLabel, status)
@@ -300,7 +301,7 @@ func (a *App) handleMenuCallback(ctx context.Context, b *tgbot.Bot, update *mode
 		if a.cfg.RestartCmd == "" {
 			break
 		}
-		newVal := !a.cfg.AutoRestart
+		newVal := !a.cfg.GetAutoRestart()
 		if err := a.cfg.SetAutoRestart(newVal); err != nil {
 			a.logf(chatID, "toggle_auto_restart error err=%v", err)
 			a.editCallbackMessageMarkup(ctx, b, update,
@@ -377,16 +378,29 @@ func truncateForMessage(text string, maxLen int) string {
 	if len(text) <= maxLen {
 		return text
 	}
-	suffix := "\n\n… (список обрезан — используйте «Скачать»)"
-	limit := maxLen - len(suffix)
-	if limit < maxLen/4 {
-		return text[:maxLen]
+	const suffix = "\n\n… (список обрезан — используйте «Скачать»)"
+	if len(suffix) >= maxLen {
+		return truncateValidUTF8(text, maxLen)
 	}
-	chunk := text[:limit]
+	limit := maxLen - len(suffix)
+	chunk := truncateValidUTF8(text, limit)
 	if i := strings.LastIndex(chunk, "\n"); i > limit/2 {
-		chunk = text[:i]
+		chunk = chunk[:i]
 	}
 	return chunk + suffix
+}
+
+// truncateValidUTF8 truncates s to at most maxLen bytes, backing off further
+// if needed so the result never ends mid-rune (Telegram rejects invalid UTF-8).
+func truncateValidUTF8(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	cut := s[:maxLen]
+	for len(cut) > 0 && !utf8.ValidString(cut) {
+		cut = cut[:len(cut)-1]
+	}
+	return cut
 }
 
 func (a *App) editCallbackMessageMarkup(ctx context.Context, b *tgbot.Bot, update *models.Update, text string, kb *models.InlineKeyboardMarkup) {
@@ -745,7 +759,7 @@ func (a *App) handleStartCreate(ctx context.Context, b *tgbot.Bot, update *model
 		a.answerAndEdit(ctx, b, update, "Ошибка создания файлов: "+err.Error())
 		return
 	}
-	a.ready[chatID] = true
+	a.setReady(chatID, true)
 	a.logf(chatID, "create_files_success domain=%q ip=%q", a.cfg.DomainList, a.cfg.IPList)
 	a.answerAndEditMarkup(ctx, b, update, a.welcomeText(ctx), a.mainMenuInlineKeyboard())
 	a.ensureReplyKeyboard(ctx, b, chatID)
@@ -762,7 +776,7 @@ func (a *App) afterFilesChanged(ctx context.Context, b *tgbot.Bot, update *model
 }
 
 func (a *App) maybeAutoRestart(chatID int64, b *tgbot.Bot) {
-	if a.cfg.AutoRestart && a.cfg.RestartCmd != "" {
+	if a.cfg.GetAutoRestart() && a.cfg.RestartCmd != "" {
 		go a.runRestartNotify(context.Background(), b, chatID)
 	}
 }
@@ -778,7 +792,7 @@ func (a *App) runRestartNotify(parentCtx context.Context, b *tgbot.Bot, chatID i
 	}
 
 	label := a.cfg.ServiceLabel
-	a.logf(chatID, "restart started label=%q cmd=%q auto=%t", label, a.cfg.RestartCmd, a.cfg.AutoRestart)
+	a.logf(chatID, "restart started label=%q cmd=%q auto=%t", label, a.cfg.RestartCmd, a.cfg.GetAutoRestart())
 
 	sent, err := b.SendMessage(parentCtx, &tgbot.SendMessageParams{
 		ChatID: chatID,

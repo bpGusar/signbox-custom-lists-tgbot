@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 )
 
 const (
@@ -23,11 +24,27 @@ type Config struct {
 	Token        string
 	DomainList   string
 	IPList       string
+	// RestartCmd is only ever set by the admin via UCI/LuCI (or the
+	// equivalent env var) at process startup, never by Telegram user input.
+	// It is executed with "sh -c" (see service.RunRestart) — keep it that
+	// way, since accepting any part of it from a chat message would be
+	// remote code execution on the router.
 	RestartCmd   string
 	ServiceLabel string
-	AutoRestart  bool
+	autoRestart  atomic.Bool
 	StatePath    string
 	LogPath      string
+}
+
+func (c *Config) GetAutoRestart() bool {
+	return c.autoRestart.Load()
+}
+
+// SetAutoRestartValue sets the in-memory flag without persisting to UCI.
+// Used during config loading and in tests; runtime toggles from the bot
+// should go through SetAutoRestart instead, which also writes to UCI.
+func (c *Config) SetAutoRestartValue(v bool) {
+	c.autoRestart.Store(v)
 }
 
 func Load() (*Config, error) {
@@ -68,7 +85,7 @@ func Load() (*Config, error) {
 			cfg.Enabled = v == "1" || strings.EqualFold(v, "true")
 		}
 		if v := getenvAny("LST_SIGNBOX_LISTS_TGBOT_AUTO_RESTART", "LISTS_TG_AUTO_RESTART"); v != "" {
-			cfg.AutoRestart = ParseBool(v)
+			cfg.autoRestart.Store(ParseBool(v))
 		}
 		return cfg, nil
 	}
@@ -97,7 +114,7 @@ func Load() (*Config, error) {
 		cfg.ServiceLabel = v
 	}
 	if v, err := uciGet("main", "auto_restart"); err == nil {
-		cfg.AutoRestart = ParseBool(v)
+		cfg.autoRestart.Store(ParseBool(v))
 	}
 	if v, err := uciGet("main", "state_path"); err == nil && v != "" {
 		cfg.StatePath = v
@@ -142,8 +159,7 @@ func usesEnvConfig() bool {
 }
 
 func (c *Config) SetAutoRestart(enabled bool) error {
-	prev := c.AutoRestart
-	c.AutoRestart = enabled
+	prev := c.autoRestart.Swap(enabled)
 	if usesEnvConfig() {
 		return nil
 	}
@@ -152,11 +168,11 @@ func (c *Config) SetAutoRestart(enabled bool) error {
 		val = "1"
 	}
 	if err := uciSet("main", "auto_restart", val); err != nil {
-		c.AutoRestart = prev
+		c.autoRestart.Store(prev)
 		return fmt.Errorf("uci set auto_restart: %w", err)
 	}
 	if err := uciCommit(); err != nil {
-		c.AutoRestart = prev
+		c.autoRestart.Store(prev)
 		return fmt.Errorf("uci commit: %w", err)
 	}
 	return nil

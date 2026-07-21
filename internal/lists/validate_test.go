@@ -99,12 +99,15 @@ func TestSortDomainLines(t *testing.T) {
 		"alpha.org",
 	}
 	got := sortDomainLines(lines)
+	// Grouped by base domain (eTLD+1) first, alphabetically: alpha.org,
+	// then api.beta.com (base domain "beta.com"), then the zebra.com group
+	// where "www.zebra.com" sorts before "zebra.com" itself.
 	want := []string{
-		"// apple.com",
 		"alpha.org",
+		"// apple.com",
 		"api.beta.com",
-		"zebra.com",
 		"www.zebra.com",
+		"zebra.com",
 	}
 	for i := range want {
 		if got[i] != want[i] {
