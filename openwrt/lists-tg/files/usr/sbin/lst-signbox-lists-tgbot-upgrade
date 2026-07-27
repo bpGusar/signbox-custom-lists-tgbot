@@ -253,6 +253,18 @@ opkg_locked() {
 	printf '%s' "$1" | grep -q 'Could not lock .*opkg\.lock'
 }
 
+# opkg exits non-zero whenever it prints a "Collected errors:" block, even
+# when the only entry is a benign resolve_conffiles notice (existing
+# conffile kept, new default saved as *-opkg). Treat that case as success.
+opkg_only_conffile_errors() {
+	local out="$1"
+	local extra
+
+	printf '%s\n' "$out" | grep -q '^Collected errors:' || return 1
+	extra="$(printf '%s\n' "$out" | sed -n '/^Collected errors:/,$p' | tail -n +2 | grep -v 'resolve_conffiles:' || true)"
+	[ -z "$extra" ]
+}
+
 opkg_install_retry() {
 	local attempt=0
 	local max_attempts=5
@@ -260,6 +272,10 @@ opkg_install_retry() {
 
 	while [ "$attempt" -lt "$max_attempts" ]; do
 		if out="$(opkg install "$@" 2>&1)"; then
+			return 0
+		fi
+		if opkg_only_conffile_errors "$out"; then
+			log "opkg install ok (existing conffile kept, new default saved as -opkg)"
 			return 0
 		fi
 		attempt=$((attempt + 1))
@@ -372,7 +388,7 @@ upgrade_main() {
 	restore_config
 	restart_service
 	rm -rf "$DOWNLOAD_DIR"
-	log "upgrade finished"
+	log "upgrade completed successfully"
 	return 0
 }
 
@@ -391,6 +407,7 @@ cmd_start() {
 		if upgrade_main; then
 			echo "STATUS=success"
 		else
+			log "upgrade failed"
 			echo "STATUS=error"
 		fi
 	) >> "$LOG" 2>&1 &
