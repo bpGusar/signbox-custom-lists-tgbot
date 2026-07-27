@@ -234,6 +234,33 @@ backup_current_config() {
 	PREV_STATE_PATH="$(uci -q get lst-signbox-lists-tgbot.main.state_path || uci -q get lists-tg.main.state_path || true)"
 }
 
+# opkg exits non-zero whenever it prints a "Collected errors:" block, even
+# when the only entry is a benign resolve_conffiles notice (existing
+# conffile kept, new default saved as *-opkg). Treat that case as success,
+# otherwise `set -e` would abort the whole install on a harmless warning.
+opkg_only_conffile_errors() {
+	local out="$1"
+	local extra
+
+	printf '%s\n' "$out" | grep -q '^Collected errors:' || return 1
+	extra="$(printf '%s\n' "$out" | sed -n '/^Collected errors:/,$p' | tail -n +2 | grep -v 'resolve_conffiles:' || true)"
+	[ -z "$extra" ]
+}
+
+opkg_install_tolerant() {
+	local out
+
+	if out="$(opkg install "$@" 2>&1)"; then
+		return 0
+	fi
+	if opkg_only_conffile_errors "$out"; then
+		log "opkg install ok (existing conffile kept, new default saved as -opkg)"
+		return 0
+	fi
+	[ -n "$out" ] && printf '%s\n' "$out" >&2
+	return 1
+}
+
 install_packages() {
 	local arch="$1" lists_ipk luci_ipk
 
@@ -248,13 +275,13 @@ install_packages() {
 	log "installing lst-signbox-lists-tgbot (${arch})"
 	lists_ipk="${DOWNLOAD_DIR}/${PACKAGE_LISTS}"
 	[ -f "$lists_ipk" ] || die "lst-signbox-lists-tgbot package not found"
-	opkg install --force-reinstall --force-downgrade "$lists_ipk"
+	opkg_install_tolerant --force-reinstall --force-downgrade "$lists_ipk" || die "opkg install failed for lst-signbox-lists-tgbot"
 
 	if [ "$INSTALL_LUCI" = "1" ]; then
 		log "installing LuCI app"
 		luci_ipk="${DOWNLOAD_DIR}/${PACKAGE_LUCI}"
 		[ -f "$luci_ipk" ] || die "luci-app-lst-signbox-lists-tgbot package not found"
-		opkg install --force-reinstall --force-downgrade "$luci_ipk"
+		opkg_install_tolerant --force-reinstall --force-downgrade "$luci_ipk" || die "opkg install failed for luci-app-lst-signbox-lists-tgbot"
 		rm -f /tmp/luci-indexcache /tmp/luci-modulecache 2>/dev/null || true
 	fi
 }
