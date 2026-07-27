@@ -838,14 +838,16 @@ func (a *App) runRestartNotify(parentCtx context.Context, b *tgbot.Bot, chatID i
 func (a *App) editOrResend(ctx context.Context, b *tgbot.Bot, chatID int64, messageID int, text string) {
 	const attempts = 3
 	var lastErr error
+	kb := a.backToMainMenuInlineKeyboard()
 	for i := 0; i < attempts; i++ {
 		if i > 0 {
 			time.Sleep(time.Duration(i) * time.Second)
 		}
 		if _, err := b.EditMessageText(ctx, &tgbot.EditMessageTextParams{
-			ChatID:    chatID,
-			MessageID: messageID,
-			Text:      text,
+			ChatID:      chatID,
+			MessageID:   messageID,
+			Text:        text,
+			ReplyMarkup: kb,
 		}); err != nil {
 			lastErr = err
 			a.logf(chatID, "restart result_edit_error attempt=%d err=%v", i+1, err)
@@ -855,8 +857,9 @@ func (a *App) editOrResend(ctx context.Context, b *tgbot.Bot, chatID int64, mess
 	}
 	a.logf(chatID, "restart result_edit_failed err=%v fallback=send_new_message", lastErr)
 	if _, err := b.SendMessage(ctx, &tgbot.SendMessageParams{
-		ChatID: chatID,
-		Text:   text,
+		ChatID:      chatID,
+		Text:        text,
+		ReplyMarkup: kb,
 	}); err != nil {
 		a.logf(chatID, "restart result_send_error err=%v", err)
 	}

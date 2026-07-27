@@ -17,6 +17,7 @@ DIST_RAW_URL="https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/${REP
 DOWNLOAD_DIR="/tmp/lst-signbox-lists-tgbot-install"
 LOG="/tmp/lst-signbox-lists-tgbot-upgrade.log"
 LOCK="/tmp/lst-signbox-lists-tgbot-upgrade.lock"
+VERSION_CACHE="/tmp/lst-signbox-lists-tgbot-upgrade.versions"
 RETRIES=3
 
 log() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
@@ -347,19 +348,35 @@ print_version_json() {
 		"$current" "$latest" "$(json_bool "$update_available")" "$(json_bool "$running")" "$state"
 }
 
+write_version_cache() {
+	printf 'CURRENT=%s\nLATEST=%s\n' "$1" "$2" > "$VERSION_CACHE"
+}
+
+# While an upgrade is running, `opkg install` holds the global opkg lock for
+# the whole install. The LuCI page polls `status` every couple of seconds
+# (see UPGRADE_POLL_INTERVAL in the frontend), and re-querying `opkg info`
+# here would fight that same lock, causing spurious "opkg locked, retrying"
+# loops in the running install. Serve cached values instead while running.
 build_version_info() {
 	local current latest update_available running state
 
-	current="$(installed_version)"
-	latest="$(fetch_latest_version)" || latest=""
+	running=0
+	upgrade_running && running=1
+
+	if [ "$running" -eq 1 ] && [ -f "$VERSION_CACHE" ]; then
+		current="$(sed -n 's/^CURRENT=//p' "$VERSION_CACHE")"
+		latest="$(sed -n 's/^LATEST=//p' "$VERSION_CACHE")"
+	else
+		current="$(installed_version)"
+		latest="$(fetch_latest_version)" || latest=""
+	fi
+
 	update_available=0
 	if [ -n "$latest" ] && [ -n "$current" ]; then
 		if ver_lt "$current" "$latest"; then
 			update_available=1
 		fi
 	fi
-	running=0
-	upgrade_running && running=1
 	state="$(upgrade_state)"
 	print_version_json "$current" "$latest" "$update_available" "$running" "$state"
 }
@@ -382,6 +399,8 @@ upgrade_main() {
 	arch="$(detect_arch)"
 	log "router arch: ${arch}"
 
+	write_version_cache "$(installed_version)" "$(fetch_latest_version || true)"
+
 	backup_current_config
 	fetch_packages "$arch" || return 1
 	install_packages "$arch" || return 1
@@ -402,7 +421,7 @@ cmd_start() {
 
 	: > "$LOG"
 	(
-		trap 'rm -f "$LOCK"' EXIT
+		trap 'rm -f "$LOCK" "$VERSION_CACHE"' EXIT
 		touch "$LOCK"
 		if upgrade_main; then
 			echo "STATUS=success"
