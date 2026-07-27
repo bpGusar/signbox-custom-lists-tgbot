@@ -1,9 +1,9 @@
 {
-  "version": "0.20260727.28-r1",
+  "version": "0.20260727.29-r1",
   "openwrt_version": "24.10",
   "packages": {
-    "lst-signbox-lists-tgbot": "lst-signbox-lists-tgbot_0.20260727.28-r1_${ARCH}.ipk",
-    "luci-app-lst-signbox-lists-tgbot": "luci-app-lst-signbox-lists-tgbot_0.20260727.28-r1_all.ipk"
+    "lst-signbox-lists-tgbot": "lst-signbox-lists-tgbot_0.20260727.29-r1_${ARCH}.ipk",
+    "luci-app-lst-signbox-lists-tgbot": "luci-app-lst-signbox-lists-tgbot_0.20260727.29-r1_all.ipk"
   },
   "architectures": [
     "aarch64_cortex-a53",
