@@ -249,23 +249,48 @@ restore_config() {
 	fi
 }
 
+opkg_locked() {
+	printf '%s' "$1" | grep -q 'Could not lock .*opkg\.lock'
+}
+
+opkg_install_retry() {
+	local attempt=0
+	local max_attempts=5
+	local out=""
+
+	while [ "$attempt" -lt "$max_attempts" ]; do
+		if out="$(opkg install "$@" 2>&1)"; then
+			return 0
+		fi
+		attempt=$((attempt + 1))
+		if opkg_locked "$out" && [ "$attempt" -lt "$max_attempts" ]; then
+			log "opkg locked, retrying (${attempt}/${max_attempts})"
+			sleep 2
+			continue
+		fi
+		[ -n "$out" ] && log "opkg install failed: $out"
+		return 1
+	done
+	return 1
+}
+
 install_packages() {
 	local arch="$1" lists_ipk luci_ipk
 
 	log "updating package lists"
 	opkg update >/dev/null 2>&1 || true
-	opkg install ca-bundle wget >/dev/null 2>&1 || true
-	opkg install luci-base luci-compat >/dev/null 2>&1 || true
+	opkg_install_retry ca-bundle wget >/dev/null 2>&1 || true
+	opkg_install_retry luci-base luci-compat >/dev/null 2>&1 || true
 
 	log "installing lst-signbox-lists-tgbot (${arch})"
 	lists_ipk="${DOWNLOAD_DIR}/${PACKAGE_LISTS}"
-	[ -f "$lists_ipk" ] || die "lst-signbox-lists-tgbot package not found"
-	opkg install --force-reinstall --force-downgrade "$lists_ipk" || die "opkg install failed for bot package"
+	[ -f "$lists_ipk" ] || { die "lst-signbox-lists-tgbot package not found"; return 1; }
+	opkg_install_retry --force-reinstall --force-downgrade "$lists_ipk" || { die "opkg install failed for bot package"; return 1; }
 
 	log "installing luci-app-lst-signbox-lists-tgbot"
 	luci_ipk="${DOWNLOAD_DIR}/${PACKAGE_LUCI}"
-	[ -f "$luci_ipk" ] || die "luci-app package not found"
-	opkg install --force-reinstall --force-downgrade "$luci_ipk" || die "opkg install failed for luci package"
+	[ -f "$luci_ipk" ] || { die "luci-app package not found"; return 1; }
+	opkg_install_retry --force-reinstall --force-downgrade "$luci_ipk" || { die "opkg install failed for luci package"; return 1; }
 	rm -f /tmp/luci-indexcache /tmp/luci-modulecache 2>/dev/null || true
 }
 
