@@ -156,7 +156,7 @@ func (a *App) restartHiddenReason() string {
 		return ""
 	}
 	if a.cfg.RestartCmd == "" {
-		return "Раздел «Настройки» скрыт: не настроен restart_cmd.\n" +
+		return "Кнопка перезапуска недоступна: не настроен restart_cmd.\n" +
 			"Настройка через UCI:\n" +
 			"uci set lst-signbox-lists-tgbot.main.restart_cmd='/etc/init.d/sing-box restart'\n" +
 			"uci commit lst-signbox-lists-tgbot\n" +
@@ -205,7 +205,7 @@ func (a *App) mainMenuInlineKeyboard() *models.InlineKeyboardMarkup {
 }
 
 func (a *App) hasSettingsMenu() bool {
-	return a.cfg.RestartCmd != ""
+	return a.cfg.RestartCmd != "" || service.UpgradeSupported()
 }
 
 func (a *App) settingsMenuInlineKeyboard() *models.InlineKeyboardMarkup {
@@ -221,6 +221,11 @@ func (a *App) settingsMenuInlineKeyboard() *models.InlineKeyboardMarkup {
 	if isPodkopCommand(a.cfg.RestartCmd) {
 		rows = append(rows, []models.InlineKeyboardButton{{
 			Text: menuBtnCheckPodkop, CallbackData: menuCbPrefix + "check_podkop",
+		}})
+	}
+	if service.UpgradeSupported() {
+		rows = append(rows, []models.InlineKeyboardButton{{
+			Text: menuBtnUpgrade, CallbackData: menuCbPrefix + "upgrade",
 		}})
 	}
 	rows = append(rows, []models.InlineKeyboardButton{{
@@ -318,6 +323,16 @@ func (a *App) handleMenuCallback(ctx context.Context, b *tgbot.Bot, update *mode
 		if a.cfg.RestartCmd != "" {
 			a.logf(chatID, "menu restart")
 			a.runRestartNotify(ctx, b, chatID)
+		}
+	case "upgrade":
+		if service.UpgradeSupported() {
+			a.logf(chatID, "menu upgrade")
+			a.handleUpgradePrompt(ctx, b, update, chatID)
+		}
+	case "upgrade_go":
+		if service.UpgradeSupported() {
+			a.logf(chatID, "menu upgrade_go")
+			a.handleUpgradeStart(ctx, b, update, chatID)
 		}
 	}
 }
