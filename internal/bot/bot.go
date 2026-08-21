@@ -6,6 +6,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"time"
 
 	tgbot "github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
@@ -89,8 +90,70 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	b.RegisterHandler(tgbot.HandlerTypeCallbackQueryData, menuCbPrefix, tgbot.MatchTypePrefix, app.handleMenuCallback)
 
 	log.Println("lst-signbox-lists-tgbot started")
+	go app.watchVersion(ctx, b)
+	go app.resumePendingUpgrade(ctx, b)
 	b.Start(ctx)
 	return nil
+}
+
+const (
+	versionCheckInterval = 6 * time.Hour
+	// The router's uplink (and podkop's tunnel) may still be coming up right
+	// after boot, so the first check waits instead of burning its attempt.
+	versionCheckStartDelay = 2 * time.Minute
+)
+
+// watchVersion polls GitHub for new releases and pushes a one-off message to
+// the owner chat for each version it has not announced yet.
+func (a *App) watchVersion(ctx context.Context, b *tgbot.Bot) {
+	if version.IsDev() {
+		return
+	}
+
+	timer := time.NewTimer(versionCheckStartDelay)
+	defer timer.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+		}
+
+		a.notifyNewVersion(ctx, b)
+		timer.Reset(versionCheckInterval)
+	}
+}
+
+func (a *App) notifyNewVersion(ctx context.Context, b *tgbot.Bot) {
+	chatID, ok := a.svc.Owner()
+	if !ok {
+		return
+	}
+
+	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	if a.verChecker.CheckFresh(cctx) != version.StatusOutdated {
+		return
+	}
+	latest := a.verChecker.Latest()
+	if a.svc.NotifiedVersion() == latest {
+		return
+	}
+
+	text := fmt.Sprintf(
+		"🆕 Доступна новая версия: %s\nТекущая: %s\n\nОбновление на роутере:\nlst-signbox-lists-tgbot-upgrade start",
+		latest, version.Display(),
+	)
+	if _, err := b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: text}); err != nil {
+		a.logf(chatID, "version_notify send_error version=%s err=%v", latest, err)
+		return
+	}
+	if err := a.svc.MarkVersionNotified(latest); err != nil {
+		a.logf(chatID, "version_notify mark_error version=%s err=%v", latest, err)
+	}
+	a.logf(chatID, "version_notify sent version=%s", latest)
 }
 
 func (a *App) logf(chatID int64, format string, args ...any) {

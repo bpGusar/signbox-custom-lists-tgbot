@@ -9,10 +9,22 @@ import (
 )
 
 type State struct {
-	FilesChangedAt *time.Time `json:"files_changed_at,omitempty"`
-	LastRestartAt  *time.Time `json:"last_restart_at,omitempty"`
-	ServiceStale   bool       `json:"service_stale"`
-	OwnerChatID    *int64     `json:"owner_chat_id,omitempty"`
+	FilesChangedAt  *time.Time      `json:"files_changed_at,omitempty"`
+	LastRestartAt   *time.Time      `json:"last_restart_at,omitempty"`
+	ServiceStale    bool            `json:"service_stale"`
+	OwnerChatID     *int64          `json:"owner_chat_id,omitempty"`
+	NotifiedVersion string          `json:"notified_version,omitempty"`
+	PendingUpgrade  *PendingUpgrade `json:"pending_upgrade,omitempty"`
+}
+
+// PendingUpgrade records an upgrade the bot kicked off, so the process that
+// comes back after the install restarts the service can finish reporting it.
+type PendingUpgrade struct {
+	ChatID      int64     `json:"chat_id"`
+	MessageID   int       `json:"message_id"`
+	FromVersion string    `json:"from_version"`
+	ToVersion   string    `json:"to_version"`
+	StartedAt   time.Time `json:"started_at"`
 }
 
 type Manager struct {
@@ -119,6 +131,70 @@ func (m *Manager) StaleBanner() string {
 		return ""
 	}
 	return "⚠️ Файлы изменены (" + st.FilesChangedAt.Format("02.01.2006 15:04") + "). Сервис не перезапускался с тех пор."
+}
+
+// Owner returns the chat ID the bot is bound to, if one has been claimed.
+func (m *Manager) Owner() (int64, bool) {
+	st, err := m.Load()
+	if err != nil || st.OwnerChatID == nil {
+		return 0, false
+	}
+	return *st.OwnerChatID, true
+}
+
+// NotifiedVersion returns the release the owner was last told about.
+// Persisting it keeps the bot from re-announcing the same release after
+// every restart.
+func (m *Manager) NotifiedVersion() string {
+	st, err := m.Load()
+	if err != nil {
+		return ""
+	}
+	return st.NotifiedVersion
+}
+
+func (m *Manager) MarkVersionNotified(v string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	st, err := m.loadLocked()
+	if err != nil {
+		return err
+	}
+	st.NotifiedVersion = v
+	return m.saveLocked(st)
+}
+
+func (m *Manager) SetPendingUpgrade(p PendingUpgrade) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	st, err := m.loadLocked()
+	if err != nil {
+		return err
+	}
+	st.PendingUpgrade = &p
+	return m.saveLocked(st)
+}
+
+func (m *Manager) PendingUpgradeInfo() *PendingUpgrade {
+	st, err := m.Load()
+	if err != nil {
+		return nil
+	}
+	return st.PendingUpgrade
+}
+
+func (m *Manager) ClearPendingUpgrade() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	st, err := m.loadLocked()
+	if err != nil {
+		return err
+	}
+	st.PendingUpgrade = nil
+	return m.saveLocked(st)
 }
 
 // ClaimOrCheckOwner returns the bot's owner chat ID, atomically claiming

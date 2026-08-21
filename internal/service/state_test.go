@@ -68,6 +68,39 @@ func TestClaimOrCheckOwner_persistsAcrossManagers(t *testing.T) {
 	}
 }
 
+func TestNotifiedVersion_persistsAcrossManagers(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+
+	m1 := NewManager(path)
+	if got := m1.NotifiedVersion(); got != "" {
+		t.Fatalf("expected empty notified version on fresh state, got %q", got)
+	}
+	if err := m1.MarkVersionNotified("0.20260727.30"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	m2 := NewManager(path)
+	if got := m2.NotifiedVersion(); got != "0.20260727.30" {
+		t.Fatalf("expected notified version to persist, got %q", got)
+	}
+}
+
+func TestMarkVersionNotified_keepsOwner(t *testing.T) {
+	m := NewManager(filepath.Join(t.TempDir(), "state.json"))
+
+	if _, _, err := m.ClaimOrCheckOwner(100); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := m.MarkVersionNotified("0.20260727.30"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	owner, ok := m.Owner()
+	if !ok || owner != 100 {
+		t.Fatalf("expected owner 100 to survive version write, got owner=%d ok=%t", owner, ok)
+	}
+}
+
 func TestClaimOrCheckOwner_concurrentClaimsHaveOneWinner(t *testing.T) {
 	m := NewManager(filepath.Join(t.TempDir(), "state.json"))
 
