@@ -142,11 +142,23 @@ func (a *App) notifyNewVersion(ctx context.Context, b *tgbot.Bot) {
 		return
 	}
 
-	text := fmt.Sprintf(
-		"🆕 Доступна новая версия: %s\nТекущая: %s\n\nОбновление на роутере:\nlst-signbox-lists-tgbot-upgrade start",
-		latest, version.Display(),
-	)
-	if _, err := b.SendMessage(ctx, &tgbot.SendMessageParams{ChatID: chatID, Text: text}); err != nil {
+	params := &tgbot.SendMessageParams{
+		ChatID: chatID,
+		Text:   fmt.Sprintf("🆕 Доступна новая версия: %s\nТекущая: %s", latest, version.Display()),
+	}
+	if service.UpgradeSupported() {
+		// Same callback as the settings entry, so pressing it runs the very
+		// same prompt-and-install flow, right in the notification message.
+		params.ReplyMarkup = &models.InlineKeyboardMarkup{
+			InlineKeyboard: [][]models.InlineKeyboardButton{
+				{{Text: menuBtnUpgrade, CallbackData: menuCbPrefix + "upgrade"}},
+			},
+		}
+	} else {
+		params.Text += "\n\nОбновление на роутере:\nlst-signbox-lists-tgbot-upgrade start"
+	}
+
+	if _, err := b.SendMessage(ctx, params); err != nil {
 		a.logf(chatID, "version_notify send_error version=%s err=%v", latest, err)
 		return
 	}
