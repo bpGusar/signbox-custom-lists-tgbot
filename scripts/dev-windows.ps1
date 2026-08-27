@@ -8,9 +8,20 @@
     - При ошибках выводит понятные шаги исправления.
     - При успехе создаёт testdata, настраивает переменные окружения и предлагает запустить бота.
 
+.PARAMETER NoWatch
+    Не следить за изменениями в коде: запустить бота один раз в текущем окне.
+
 .EXAMPLE
     .\scripts\dev-windows.ps1
+
+.EXAMPLE
+    .\scripts\dev-windows.ps1 -NoWatch
 #>
+
+[CmdletBinding()]
+param(
+    [switch]$NoWatch
+)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -44,6 +55,25 @@ function Write-Warn([string]$Text) {
     $script:ChecksWarned++
 }
 
+function Invoke-Native {
+    param([scriptblock]$Script)
+
+    # При $ErrorActionPreference = 'Stop' любой вывод нативной команды в stderr
+    # превращается в терминирующую ошибку, поэтому на время вызова снимаем Stop.
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $out = @(& $Script 2>&1 | ForEach-Object { $_.ToString() })
+        return [pscustomobject]@{
+            ExitCode = $LASTEXITCODE
+            Output   = $out
+        }
+    }
+    finally {
+        $ErrorActionPreference = $previous
+    }
+}
+
 function Write-Fix([string[]]$Steps) {
     Write-Host '         Как исправить:' -ForegroundColor DarkGray
     foreach ($step in $Steps) {
@@ -65,8 +95,9 @@ function Test-GoVersion {
         return $false
     }
 
-    $versionLine = & go version 2>&1
-    if ($LASTEXITCODE -ne 0) {
+    $version = Invoke-Native { go version }
+    $versionLine = ($version.Output -join ' ')
+    if ($version.ExitCode -ne 0) {
         Write-Fail "go version завершился с ошибкой: $versionLine"
         return $false
     }
@@ -150,10 +181,10 @@ function Test-GoModules {
 
     Push-Location $ProjectRoot
     try {
-        $output = & go mod download 2>&1
-        if ($LASTEXITCODE -ne 0) {
+        $result = Invoke-Native { go mod download }
+        if ($result.ExitCode -ne 0) {
             Write-Fail "go mod download не удался."
-            if ($output) { Write-Host "         $output" -ForegroundColor DarkGray }
+            foreach ($line in $result.Output) { Write-Host "         $line" -ForegroundColor DarkGray }
             Write-Fix @(
                 'Проверьте интернет и прокси (переменные HTTP_PROXY/HTTPS_PROXY).'
                 "Выполните вручную: cd `"$ProjectRoot`"; go mod download"
@@ -324,32 +355,92 @@ function Set-DevEnvironment {
     Write-Ok 'LST_SIGNBOX_LISTS_TGBOT_TOKEN        = *** (скрыт)'
 }
 
-function Test-Build {
-    Write-Title 'Сборка'
-
+function Invoke-GoBuild {
     Push-Location $ProjectRoot
     try {
-        $output = & go build -trimpath -o $BinaryName .\cmd\lst-signbox-lists-tgbot 2>&1
-        if ($LASTEXITCODE -ne 0) {
-            Write-Fail 'go build завершился с ошибкой.'
-            if ($output) { Write-Host "         $output" -ForegroundColor DarkGray }
-            Write-Fix @(
-                "cd `"$ProjectRoot`""
-                "go build -trimpath -o $BinaryName .\cmd\lst-signbox-lists-tgbot"
-            )
+        $result = Invoke-Native { go build -trimpath -o $BinaryName .\cmd\lst-signbox-lists-tgbot }
+        if ($result.ExitCode -ne 0) {
+            foreach ($line in $result.Output) {
+                Write-Host "         $line" -ForegroundColor DarkGray
+            }
             return $false
         }
 
-        if (-not (Test-Path -LiteralPath $BinaryPath)) {
-            Write-Fail "Бинарник не найден после сборки: $BinaryPath"
-            return $false
-        }
-
-        Write-Ok "Собран: $BinaryPath"
-        return $true
+        return (Test-Path -LiteralPath $BinaryPath)
     }
     finally {
         Pop-Location
+    }
+}
+
+function Test-Build {
+    Write-Title 'Сборка'
+
+    if (-not (Invoke-GoBuild)) {
+        Write-Fail 'go build завершился с ошибкой.'
+        Write-Fix @(
+            "cd `"$ProjectRoot`""
+            "go build -trimpath -o $BinaryName .\cmd\lst-signbox-lists-tgbot"
+        )
+        return $false
+    }
+
+    Write-Ok "Собран: $BinaryPath"
+    return $true
+}
+
+function Get-SourceStamp {
+    $files = @(Get-ChildItem -LiteralPath $ProjectRoot -Recurse -File -Filter '*.go' -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -notlike (Join-Path $ProjectRoot 'testdata\*') -and $_.FullName -notlike (Join-Path $ProjectRoot 'dist\*') })
+
+    foreach ($name in @('go.mod', 'go.sum')) {
+        $path = Join-Path $ProjectRoot $name
+        if (Test-Path -LiteralPath $path) {
+            $files += Get-Item -LiteralPath $path
+        }
+    }
+
+    if ($files.Count -eq 0) { return '' }
+
+    $parts = $files | Sort-Object FullName | ForEach-Object { "$($_.FullName)|$($_.Length)|$($_.LastWriteTimeUtc.Ticks)" }
+    return ($parts -join "`n")
+}
+
+function Start-BotProcess {
+    # Process.Start вместо Start-Process: так у нас остаётся хендл процесса
+    # и после завершения бота доступен его код возврата.
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $BinaryPath
+    $psi.WorkingDirectory = $ProjectRoot
+    $psi.UseShellExecute = $false
+    return [System.Diagnostics.Process]::Start($psi)
+}
+
+function Get-ProcessExitCode {
+    param($Proc)
+
+    try {
+        [void]$Proc.WaitForExit(1000)
+        return $Proc.ExitCode
+    }
+    catch {
+        return $null
+    }
+}
+
+function Stop-BotProcess {
+    param($Proc)
+
+    if ($null -eq $Proc) { return }
+
+    try {
+        if (-not $Proc.HasExited) {
+            Stop-Process -Id $Proc.Id -Force -ErrorAction SilentlyContinue
+            [void]$Proc.WaitForExit(5000)
+        }
+    }
+    catch {
+        # процесс уже завершился
     }
 }
 
@@ -361,6 +452,12 @@ function Start-BotInteractive {
     Write-Host '  Логи: testdata\bot.log' -ForegroundColor DarkGray
     Write-Host '  Остановка: Ctrl+C' -ForegroundColor DarkGray
     Write-Host '  В Telegram: /start, затем отправьте список доменов или IP.' -ForegroundColor DarkGray
+    if ($NoWatch) {
+        Write-Host '  Режим -NoWatch: изменения в коде НЕ пересобираются автоматически.' -ForegroundColor DarkGray
+    }
+    else {
+        Write-Host '  Слежу за *.go, go.mod, go.sum: при изменении пересобираю и перезапускаю бота.' -ForegroundColor DarkGray
+    }
     Write-Host ''
 
     $answer = Read-Host '  Запустить бота сейчас? [Y/n]'
@@ -375,20 +472,72 @@ function Start-BotInteractive {
     Write-Host '--- Запуск lst-signbox-lists-tgbot ---' -ForegroundColor Cyan
     Write-Host ''
 
-    Push-Location $ProjectRoot
-    try {
-        & ".\$BinaryName"
-        $exitCode = $LASTEXITCODE
-        Write-Host ''
-        if ($exitCode -ne 0) {
-            Write-Host "  Бот завершился с кодом $exitCode. Смотрите testdata\bot.log" -ForegroundColor Red
+    if ($NoWatch) {
+        Push-Location $ProjectRoot
+        try {
+            & ".\$BinaryName"
+            $exitCode = $LASTEXITCODE
+            Write-Host ''
+            if ($exitCode -ne 0) {
+                Write-Host "  Бот завершился с кодом $exitCode. Смотрите testdata\bot.log" -ForegroundColor Red
+            }
+            else {
+                Write-Host '  Бот остановлен.' -ForegroundColor Green
+            }
         }
-        else {
-            Write-Host '  Бот остановлен.' -ForegroundColor Green
+        finally {
+            Pop-Location
+        }
+        return
+    }
+
+    Start-BotWatch
+}
+
+function Start-BotWatch {
+    $stamp = Get-SourceStamp
+    $proc = Start-BotProcess
+    Write-Host "  [RUN]  Бот запущен (PID $($proc.Id)). Слежу за изменениями в коде..." -ForegroundColor Green
+
+    try {
+        while ($true) {
+            Start-Sleep -Milliseconds 700
+
+            if ($null -ne $proc -and $proc.HasExited) {
+                $exitCode = Get-ProcessExitCode -Proc $proc
+                $exitText = if ($null -eq $exitCode) { 'Бот завершился.' } else { "Бот завершился с кодом $exitCode." }
+                Write-Host ''
+                Write-Host "  [STOP] $exitText Смотрите testdata\bot.log" -ForegroundColor Red
+                Write-Host '         Жду изменений в коде, чтобы пересобрать и перезапустить.' -ForegroundColor DarkGray
+                $proc = $null
+            }
+
+            $current = Get-SourceStamp
+            if ($current -eq $stamp) { continue }
+
+            # даём редактору дописать файлы
+            Start-Sleep -Milliseconds 400
+            $stamp = Get-SourceStamp
+
+            Write-Host ''
+            Write-Host '  [BUILD] Код изменился - пересобираю...' -ForegroundColor Cyan
+
+            Stop-BotProcess -Proc $proc
+            $proc = $null
+
+            if (Invoke-GoBuild) {
+                $proc = Start-BotProcess
+                Write-Host "  [RUN]  Пересобран и перезапущен (PID $($proc.Id))." -ForegroundColor Green
+            }
+            else {
+                Write-Host '  [FAIL] Сборка не удалась, бот не запущен. Исправьте код - пересоберу автоматически.' -ForegroundColor Red
+            }
         }
     }
     finally {
-        Pop-Location
+        Stop-BotProcess -Proc $proc
+        Write-Host ''
+        Write-Host '  Бот остановлен.' -ForegroundColor Green
     }
 }
 

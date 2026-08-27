@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -13,6 +12,7 @@ import (
 	"github.com/go-telegram/bot/models"
 
 	"lst-signbox-lists-tgbot/internal/lists"
+	"lst-signbox-lists-tgbot/internal/podkop"
 	"lst-signbox-lists-tgbot/internal/service"
 	"lst-signbox-lists-tgbot/internal/version"
 )
@@ -26,14 +26,14 @@ func (a *App) handleStart(ctx context.Context, b *tgbot.Bot, update *models.Upda
 }
 
 func (a *App) sendStartCheck(ctx context.Context, b *tgbot.Bot, chatID int64) {
-	missing := lists.MissingFiles(a.cfg.DomainList, a.cfg.IPList)
+	missing := a.missingFiles(ctx)
 	if len(missing) > 0 {
 		a.logf(chatID, "start_check missing_files=%s", strings.Join(missing, ","))
 		text := "📂 Отсутствуют файлы:\n" + strings.Join(missing, "\n")
 		kb := &models.InlineKeyboardMarkup{
 			InlineKeyboard: [][]models.InlineKeyboardButton{
-				{{Text: "📝 Создать файлы", CallbackData: cbPrefix + a.sess.Create(chatID, ActionStartCreate, 0, "", nil, nil)}},
-				{{Text: "🔄 Проверить снова", CallbackData: cbPrefix + a.sess.Create(chatID, ActionStartRetry, 0, "", nil, nil)}},
+				{{Text: "📝 Создать файлы", CallbackData: cbPrefix + a.sess.Create(PendingOp{ChatID: chatID, Kind: ActionStartCreate})}},
+				{{Text: "🔄 Проверить снова", CallbackData: cbPrefix + a.sess.Create(PendingOp{ChatID: chatID, Kind: ActionStartRetry})}},
 			},
 		}
 		_, _ = b.SendMessage(ctx, &tgbot.SendMessageParams{
@@ -67,8 +67,10 @@ func (a *App) welcomeText(ctx context.Context) string {
 		"• kick.com\n" +
 		"• 192.168.1.0/24\n\n" +
 		"Можно вставить строки из файла — префикс // будет проигнорирован.\n" +
-		"Бот определит тип, проверит файл и предложит действия.\n\n" +
-		fmt.Sprintf("📄 Домены: %s\n📄 IP: %s", a.cfg.DomainList, a.cfg.IPList) +
+		"Бот определит тип, проверит файл и предложит действия.\n" +
+		"Записи можно разложить по категориям: «Добавить в категорию» при добавлении,\n" +
+		"«Управление записями» → секция → «Показать» для просмотра и управления.\n\n" +
+		a.sectionsSummary(ctx) +
 		"\n\n⌨️ /menu — показать кнопки, /hide — скрыть"
 
 	if banner := a.svc.StaleBanner(); banner != "" {
@@ -187,14 +189,7 @@ func (a *App) ensureReplyKeyboard(ctx context.Context, b *tgbot.Bot, chatID int6
 
 func (a *App) mainMenuInlineKeyboard() *models.InlineKeyboardMarkup {
 	rows := [][]models.InlineKeyboardButton{
-		{
-			{Text: menuBtnDownloadIP, CallbackData: menuCbPrefix + "download_ip"},
-			{Text: menuBtnDownloadDomains, CallbackData: menuCbPrefix + "download_domains"},
-		},
-		{
-			{Text: menuBtnViewIP, CallbackData: menuCbPrefix + "view_ip"},
-			{Text: menuBtnViewDomains, CallbackData: menuCbPrefix + "view_domains"},
-		},
+		{{Text: btnManage, CallbackData: menuCbPrefix + "manage"}},
 	}
 	if a.hasSettingsMenu() {
 		rows = append(rows, []models.InlineKeyboardButton{{
@@ -271,27 +266,22 @@ func (a *App) handleMenuCallback(ctx context.Context, b *tgbot.Bot, update *mode
 		CallbackQueryID: update.CallbackQuery.ID,
 	})
 
+	// A button that points at a list carries the whole target — list type,
+	// section and file — so it keeps working no matter what was opened since.
+	if act, ok := parseTargetAction(action); ok {
+		a.handleTargetAction(ctx, b, update, act)
+		return
+	}
+	if token, ok := strings.CutPrefix(action, "sec_"); ok {
+		a.logf(chatID, "menu section token=%s", token)
+		a.showSectionCard(ctx, b, update, token)
+		return
+	}
+
 	switch action {
-	case "download_ip":
-		a.logf(chatID, "menu download_ip")
-		a.sendListFile(ctx, b, chatID, a.cfg.IPList, "ip_list.lst", "IP-список")
-	case "download_domains":
-		a.logf(chatID, "menu download_domains")
-		a.sendListFile(ctx, b, chatID, a.cfg.DomainList, "domain_list.lst", "список доменов")
-	case "view_ip":
-		a.logf(chatID, "menu view_ip")
-		text, err := a.listViewText(a.cfg.IPList, "IP-список")
-		if err != nil {
-			text = fmt.Sprintf("Не удалось открыть IP-список (%s): %v", a.cfg.IPList, err)
-		}
-		a.editCallbackMessageMarkup(ctx, b, update, text, a.backToMainMenuInlineKeyboard())
-	case "view_domains":
-		a.logf(chatID, "menu view_domains")
-		text, err := a.listViewText(a.cfg.DomainList, "список доменов")
-		if err != nil {
-			text = fmt.Sprintf("Не удалось открыть список доменов (%s): %v", a.cfg.DomainList, err)
-		}
-		a.editCallbackMessageMarkup(ctx, b, update, text, a.backToMainMenuInlineKeyboard())
+	case "manage":
+		a.logf(chatID, "menu manage")
+		a.showSections(ctx, b, update)
 	case "check_podkop":
 		a.logf(chatID, "menu check_podkop")
 		text, ok := a.podkopIntegrationText(ctx)
@@ -334,10 +324,41 @@ func (a *App) handleMenuCallback(ctx context.Context, b *tgbot.Bot, update *mode
 			a.logf(chatID, "menu upgrade_go")
 			a.handleUpgradeStart(ctx, b, update, chatID)
 		}
+	default:
+		// Buttons drawn before an update point at actions that are gone.
+		a.logf(chatID, "menu unknown action=%q", action)
+		a.editCallbackMessageMarkup(ctx, b, update,
+			"⏳ Эта кнопка устарела — откройте меню заново.", a.backToMainMenuInlineKeyboard())
 	}
 }
 
-func (a *App) sendListFile(ctx context.Context, b *tgbot.Bot, chatID int64, path, fallbackName, label string) {
+// missingFiles is every list file that is bound somewhere but not on disk.
+func (a *App) missingFiles(ctx context.Context) []string {
+	var missing []string
+	for _, p := range a.allPaths(ctx) {
+		if !lists.FileExists(p) {
+			missing = append(missing, p)
+		}
+	}
+	return missing
+}
+
+// sectionsSummary tells the welcome screen what the bot can reach, without
+// making the user open a menu to find out.
+func (a *App) sectionsSummary(ctx context.Context) string {
+	secs := a.sections(ctx)
+	if len(secs) == 1 && secs[0].Name == "" {
+		return fmt.Sprintf("📄 Домены: %s\n📄 IP: %s", a.cfg.DomainList, a.cfg.IPList)
+	}
+	names := make([]string, 0, len(secs))
+	for _, s := range secs {
+		names = append(names, s.Name)
+	}
+	return "🗂 Секции podkop: " + strings.Join(names, ", ")
+}
+
+func (a *App) sendListFile(ctx context.Context, b *tgbot.Bot, chatID int64, tgt listTarget) {
+	path, label := tgt.Path, typeLabel(tgt.Type)
 	f, err := os.Open(path)
 	if err != nil {
 		a.logf(chatID, "download_file_error label=%q path=%q err=%v", label, path, err)
@@ -349,10 +370,7 @@ func (a *App) sendListFile(ctx context.Context, b *tgbot.Bot, chatID int64, path
 	}
 	defer func() { _ = f.Close() }()
 
-	filename := filepath.Base(path)
-	if filename == "" || filename == "." || filename == string(filepath.Separator) {
-		filename = fallbackName
-	}
+	filename := fileLabel(path)
 
 	_, err = b.SendDocument(ctx, &tgbot.SendDocumentParams{
 		ChatID: chatID,
@@ -360,7 +378,7 @@ func (a *App) sendListFile(ctx context.Context, b *tgbot.Bot, chatID int64, path
 			Filename: filename,
 			Data:     f,
 		},
-		Caption: fmt.Sprintf("%s (%s)", label, path),
+		Caption: fmt.Sprintf("%s — %s\n%s", sectionDisplayName(tgt.Section), label, path),
 	})
 	if err != nil {
 		a.logf(chatID, "send_document_error label=%q path=%q err=%v", label, path, err)
@@ -371,22 +389,6 @@ func (a *App) sendListFile(ctx context.Context, b *tgbot.Bot, chatID int64, path
 		return
 	}
 	a.logf(chatID, "download_file_sent label=%q path=%q", label, path)
-}
-
-const listViewTextMaxLen = tgMaxMessageLen - 600
-
-func (a *App) listViewText(path, label string) (string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", err
-	}
-
-	content := strings.TrimRight(string(data), "\r\n")
-	header := fmt.Sprintf("%s (%s):", label, path)
-	if content == "" {
-		return header + "\n\nФайл пуст.", nil
-	}
-	return truncateForMessage(header+"\n\n"+content, listViewTextMaxLen), nil
 }
 
 func truncateForMessage(text string, maxLen int) string {
@@ -419,6 +421,13 @@ func truncateValidUTF8(s string, maxLen int) string {
 }
 
 func (a *App) editCallbackMessageMarkup(ctx context.Context, b *tgbot.Bot, update *models.Update, text string, kb *models.InlineKeyboardMarkup) {
+	a.editCallbackMessage(ctx, b, update, text, kb, "")
+}
+
+// editCallbackMessage rewrites the message a button was tapped in. The stale
+// banner it prepends is plain text with no HTML specials, so it is safe to add
+// under any parse mode.
+func (a *App) editCallbackMessage(ctx context.Context, b *tgbot.Bot, update *models.Update, text string, kb *models.InlineKeyboardMarkup, parseMode models.ParseMode) {
 	if banner := a.svc.StaleBanner(); banner != "" && !strings.Contains(text, "⚠️") {
 		text = banner + "\n\n" + text
 		if reason := a.restartHiddenReason(); reason != "" {
@@ -430,6 +439,7 @@ func (a *App) editCallbackMessageMarkup(ctx context.Context, b *tgbot.Bot, updat
 		ChatID:    update.CallbackQuery.Message.Message.Chat.ID,
 		MessageID: update.CallbackQuery.Message.Message.ID,
 		Text:      text,
+		ParseMode: parseMode,
 	}
 	if kb != nil {
 		params.ReplyMarkup = kb
@@ -465,42 +475,16 @@ func (a *App) handleListInput(ctx context.Context, b *tgbot.Bot, update *models.
 		return
 	}
 
-	path := listPath(a.cfg, parsed.Type)
-	label := typeLabel(parsed.Type)
-	a.logf(chatID, "list_input accepted type=%s count=%d path=%q",
-		label, len(parsed.Valid), path)
+	a.logf(chatID, "list_input accepted type=%s count=%d", typeLabel(parsed.Type), len(parsed.Valid))
 
-	validNew, validActive, validDisabled, err := classifyBuckets(path, parsed.Valid)
-	if err != nil {
-		a.logf(chatID, "list_input classify_error path=%q err=%v", path, err)
-		_, _ = b.SendMessage(ctx, &tgbot.SendMessageParams{
-			ChatID: chatID,
-			Text:   "❌ Ошибка чтения файла: " + err.Error(),
-		})
+	// Which file the entries belong in is a question of its own now: the same
+	// domains can go to any podkop section.
+	opID := a.sess.Create(PendingOp{ChatID: chatID, Kind: ActionAdd, ListType: parsed.Type, Values: parsed.Valid})
+	op, ok := a.sess.Get(opID)
+	if !ok {
 		return
 	}
-
-	opID := a.sess.Create(chatID, ActionAdd, parsed.Type, path, parsed.Valid, nil)
-	msg := buildListInputMessage(label, parsed.Valid, validNew, validActive, validDisabled)
-	rows, hasActions := buildListInputKeyboard(opID, validNew, validActive, validDisabled)
-	if !hasActions {
-		msg += "\n\nℹ️ Нечего делать — все записи уже в нужном состоянии."
-	}
-	kb := &models.InlineKeyboardMarkup{InlineKeyboard: rows}
-
-	reply := msg
-	if banner := a.svc.StaleBanner(); banner != "" {
-		reply = banner + "\n\n" + msg
-		if reason := a.restartHiddenReason(); reason != "" {
-			reply += "\n\n" + reason
-		}
-	}
-
-	_, _ = b.SendMessage(ctx, &tgbot.SendMessageParams{
-		ChatID:      chatID,
-		Text:        reply,
-		ReplyMarkup: kb,
-	})
+	a.askAddTarget(ctx, b, a.replyTo(nil, chatID), op)
 }
 
 func (a *App) handleCallback(ctx context.Context, b *tgbot.Bot, update *models.Update) {
@@ -531,7 +515,30 @@ func (a *App) handleCallback(ctx context.Context, b *tgbot.Bot, update *models.U
 
 	if action == "cancel" {
 		a.sess.Delete(opID)
+		a.sess.ClearAwait(chatID)
 		a.answerAndEditMarkup(ctx, b, update, "❌ Операция отменена.", a.backToMainMenuInlineKeyboard())
+		return
+	}
+
+	// Picking a category works the same for every operation that asks for one,
+	// so it is routed before the per-kind switch.
+	if token, ok := strings.CutPrefix(action, cbPickPrefix); ok {
+		a.handleCategoryPick(ctx, b, update, op, token)
+		return
+	}
+	if action == cbNewCategory {
+		a.promptNewCategory(ctx, b, update, op)
+		return
+	}
+
+	// Choosing where the pending entries land: the section first, then the
+	// file when the section is fed from more than one.
+	if token, ok := strings.CutPrefix(action, cbSectionPrefix); ok {
+		a.handleAddSectionPick(ctx, b, update, op, token)
+		return
+	}
+	if token, ok := strings.CutPrefix(action, cbFilePrefix); ok {
+		a.handleAddFilePick(ctx, b, update, op, token)
 		return
 	}
 
@@ -554,6 +561,23 @@ func (a *App) handleCallback(ctx context.Context, b *tgbot.Bot, update *models.U
 			a.handleDelete(ctx, b, update, opForValues(op, vals))
 		case "dis":
 			a.handleDisablePrompt(ctx, b, update, opForDisable(op))
+		case "cat":
+			a.handleAddCategoryPrompt(ctx, b, update, op)
+		}
+	case ActionMove:
+		if action == "confirm" {
+			a.execMove(ctx, b, update, op)
+			return
+		}
+		a.answerCallback(ctx, b, update)
+	case ActionCategory:
+		a.handleCategoryAction(ctx, b, update, op, action)
+	case ActionBind:
+		switch action {
+		case "confirm":
+			a.execBind(ctx, b, update, op)
+		case "custom":
+			a.promptBindPath(ctx, b, update, op)
 		}
 	case ActionAddAll:
 		if action == "confirm" {
@@ -601,10 +625,19 @@ func opForDisable(op *PendingOp) *PendingOp {
 	return opForValues(op, op.DisableValues)
 }
 
+// opTargetLine names the file an operation is about, for screens that are no
+// longer preceded by one saying so.
+func opTargetLine(op *PendingOp) string {
+	if op.ListPath == "" {
+		return ""
+	}
+	return targetLine(listTarget{Section: op.Section, Type: op.ListType, Path: op.ListPath}) + "\n\n"
+}
+
 func (a *App) handleApplyMixed(ctx context.Context, b *tgbot.Bot, update *models.Update, op *PendingOp) {
 	var parts []string
 	if len(op.Values) > 0 {
-		if err := lists.AddNew(op.ListPath, op.Values, op.ListType); err != nil {
+		if err := lists.AddNew(op.ListPath, op.Values, op.ListType, op.Category); err != nil {
 			a.logf(op.ChatID, "apply_mixed add_error path=%q err=%v", op.ListPath, err)
 			a.answerAndEdit(ctx, b, update, "❌ Ошибка добавления: "+err.Error())
 			return
@@ -612,7 +645,7 @@ func (a *App) handleApplyMixed(ctx context.Context, b *tgbot.Bot, update *models
 		parts = append(parts, fmt.Sprintf("➕ Добавлено (%d):\n%s", len(op.Values), lists.FormatList(op.Values)))
 	}
 	if len(op.DisableValues) > 0 {
-		if err := lists.Disable(op.ListPath, op.DisableValues, op.ListType); err != nil {
+		if err := lists.Disable(op.ListPath, op.DisableValues, op.ListType, op.Category); err != nil {
 			a.logf(op.ChatID, "apply_mixed disable_error path=%q err=%v", op.ListPath, err)
 			a.answerAndEdit(ctx, b, update, "❌ Ошибка отключения: "+err.Error())
 			return
@@ -621,18 +654,18 @@ func (a *App) handleApplyMixed(ctx context.Context, b *tgbot.Bot, update *models
 	}
 	a.logf(op.ChatID, "apply_mixed success add=%d disable=%d path=%q", len(op.Values), len(op.DisableValues), op.ListPath)
 	a.sess.Delete(op.ID)
-	a.afterFilesChanged(ctx, b, update, op.ChatID, strings.Join(parts, "\n\n"))
+	a.afterFilesChanged(ctx, b, update, op.ChatID, opTargetLine(op)+strings.Join(parts, "\n\n"))
 }
 
 func (a *App) execAddAll(ctx context.Context, b *tgbot.Bot, update *models.Update, op *PendingOp) {
-	if err := lists.AddAll(op.ListPath, op.Values, op.ListType); err != nil {
+	if err := lists.AddAll(op.ListPath, op.Values, op.ListType, op.Category); err != nil {
 		a.logf(op.ChatID, "add_all write_error path=%q err=%v", op.ListPath, err)
 		a.answerAndEdit(ctx, b, update, "Ошибка записи: "+err.Error())
 		return
 	}
 	a.logf(op.ChatID, "add_all success count=%d path=%q", len(op.Values), op.ListPath)
 	a.sess.Delete(op.ID)
-	a.afterAddSuccess(ctx, b, update, op.ChatID, "➕ Записи добавлены/включены.")
+	a.afterAddSuccess(ctx, b, update, op.ChatID, opTargetLine(op)+"➕ Записи добавлены/включены.")
 }
 
 func (a *App) execAddNew(ctx context.Context, b *tgbot.Bot, update *models.Update, op *PendingOp) {
@@ -650,14 +683,15 @@ func (a *App) execAddNew(ctx context.Context, b *tgbot.Bot, update *models.Updat
 		return
 	}
 
-	if err := lists.AddNew(op.ListPath, op.Values, op.ListType); err != nil {
+	if err := lists.AddNew(op.ListPath, op.Values, op.ListType, op.Category); err != nil {
 		a.logf(op.ChatID, "add_new write_error path=%q err=%v", op.ListPath, err)
 		a.answerAndEdit(ctx, b, update, "Ошибка записи: "+err.Error())
 		return
 	}
 	a.logf(op.ChatID, "add_new success new_count=%d path=%q", len(newVals), op.ListPath)
 	a.sess.Delete(op.ID)
-	a.afterAddSuccess(ctx, b, update, op.ChatID, fmt.Sprintf("➕ Добавлено (%d):\n%s", len(newVals), lists.FormatList(newVals)))
+	a.afterAddSuccess(ctx, b, update, op.ChatID,
+		opTargetLine(op)+fmt.Sprintf("➕ Добавлено (%d):\n%s", len(newVals), lists.FormatList(newVals)))
 }
 
 func (a *App) execEnable(ctx context.Context, b *tgbot.Bot, update *models.Update, op *PendingOp) {
@@ -675,14 +709,15 @@ func (a *App) execEnable(ctx context.Context, b *tgbot.Bot, update *models.Updat
 		return
 	}
 
-	if err := lists.AddAll(op.ListPath, disabled, op.ListType); err != nil {
+	if err := lists.AddAll(op.ListPath, disabled, op.ListType, op.Category); err != nil {
 		a.logf(op.ChatID, "enable write_error path=%q err=%v", op.ListPath, err)
 		a.answerAndEdit(ctx, b, update, "Ошибка записи: "+err.Error())
 		return
 	}
 	a.logf(op.ChatID, "enable success count=%d path=%q", len(disabled), op.ListPath)
 	a.sess.Delete(op.ID)
-	a.afterAddSuccess(ctx, b, update, op.ChatID, fmt.Sprintf("✅ Включено (%d):\n%s", len(disabled), lists.FormatList(disabled)))
+	a.afterAddSuccess(ctx, b, update, op.ChatID,
+		opTargetLine(op)+fmt.Sprintf("✅ Включено (%d):\n%s", len(disabled), lists.FormatList(disabled)))
 }
 
 func (a *App) handleDelete(ctx context.Context, b *tgbot.Bot, update *models.Update, op *PendingOp) {
@@ -693,7 +728,8 @@ func (a *App) handleDelete(ctx context.Context, b *tgbot.Bot, update *models.Upd
 	}
 	a.logf(op.ChatID, "delete success count=%d path=%q", len(op.Values), op.ListPath)
 	a.sess.Delete(op.ID)
-	a.afterFilesChanged(ctx, b, update, op.ChatID, fmt.Sprintf("🗑 Удалено:\n%s", lists.FormatList(op.Values)))
+	a.afterFilesChanged(ctx, b, update, op.ChatID,
+		opTargetLine(op)+fmt.Sprintf("🗑 Удалено:\n%s", lists.FormatList(op.Values)))
 }
 
 func (a *App) handleDisablePrompt(ctx context.Context, b *tgbot.Bot, update *models.Update, op *PendingOp) {
@@ -706,7 +742,7 @@ func (a *App) handleDisablePrompt(ctx context.Context, b *tgbot.Bot, update *mod
 
 	newVals, active, disabled := lists.GroupByStatus(classified)
 
-	msg := fmt.Sprintf(
+	msg := opTargetLine(op) + fmt.Sprintf(
 		"Отключение (%s):\n\nУже отключены:\n%s\n\nБудут отключены:\n%s\n\nОтсутствуют в файле:\n%s",
 		typeLabel(op.ListType),
 		lists.FormatList(disabled),
@@ -718,7 +754,7 @@ func (a *App) handleDisablePrompt(ctx context.Context, b *tgbot.Bot, update *mod
 
 	if len(newVals) > 0 {
 		a.logf(op.ChatID, "disable requires_add_missing missing=%d active=%d disabled=%d", len(newVals), len(active), len(disabled))
-		confirmID := a.sess.Create(op.ChatID, ActionDisableAddMissing, op.ListType, op.ListPath, op.Values, nil)
+		confirmID := a.sess.Create(PendingOp{ChatID: op.ChatID, Kind: ActionDisableAddMissing, ListType: op.ListType, ListPath: op.ListPath, Section: op.Section, Values: op.Values, Category: op.Category})
 		kb := &models.InlineKeyboardMarkup{
 			InlineKeyboard: [][]models.InlineKeyboardButton{
 				{{Text: "⏸ Добавить отключёнными", CallbackData: cbPrefix + confirmID + ":confirm"}},
@@ -736,7 +772,7 @@ func (a *App) handleDisablePrompt(ctx context.Context, b *tgbot.Bot, update *mod
 	}
 	a.logf(op.ChatID, "disable confirm_only active=%d", len(active))
 
-	confirmID := a.sess.Create(op.ChatID, ActionDisableConfirm, op.ListType, op.ListPath, op.Values, nil)
+	confirmID := a.sess.Create(PendingOp{ChatID: op.ChatID, Kind: ActionDisableConfirm, ListType: op.ListType, ListPath: op.ListPath, Section: op.Section, Values: op.Values, Category: op.Category})
 	kb := &models.InlineKeyboardMarkup{
 		InlineKeyboard: [][]models.InlineKeyboardButton{
 			{{Text: "✅ Подтвердить", CallbackData: cbPrefix + confirmID + ":confirm"}},
@@ -754,28 +790,29 @@ func (a *App) execDisable(ctx context.Context, b *tgbot.Bot, update *models.Upda
 	}
 	a.logf(op.ChatID, "disable_existing success count=%d path=%q", len(op.Values), op.ListPath)
 	a.sess.Delete(op.ID)
-	a.afterFilesChanged(ctx, b, update, op.ChatID, "⏸ Записи отключены.")
+	a.afterFilesChanged(ctx, b, update, op.ChatID, opTargetLine(op)+"⏸ Записи отключены.")
 }
 
 func (a *App) execDisableWithMissing(ctx context.Context, b *tgbot.Bot, update *models.Update, op *PendingOp) {
-	if err := lists.Disable(op.ListPath, op.Values, op.ListType); err != nil {
+	if err := lists.Disable(op.ListPath, op.Values, op.ListType, op.Category); err != nil {
 		a.logf(op.ChatID, "disable_with_missing write_error path=%q err=%v", op.ListPath, err)
 		a.answerAndEdit(ctx, b, update, "Ошибка: "+err.Error())
 		return
 	}
 	a.logf(op.ChatID, "disable_with_missing success count=%d path=%q", len(op.Values), op.ListPath)
 	a.sess.Delete(op.ID)
-	a.afterFilesChanged(ctx, b, update, op.ChatID, "⏸ Записи отключены (включая добавленные).")
+	a.afterFilesChanged(ctx, b, update, op.ChatID, opTargetLine(op)+"⏸ Записи отключены (включая добавленные).")
 }
 
 func (a *App) handleStartCreate(ctx context.Context, b *tgbot.Bot, update *models.Update, chatID int64) {
-	if err := lists.CreateFiles(a.cfg.DomainList, a.cfg.IPList); err != nil {
-		a.logf(chatID, "create_files_error domain=%q ip=%q err=%v", a.cfg.DomainList, a.cfg.IPList, err)
+	missing := a.missingFiles(ctx)
+	if err := lists.CreateFiles(missing...); err != nil {
+		a.logf(chatID, "create_files_error files=%q err=%v", strings.Join(missing, ","), err)
 		a.answerAndEdit(ctx, b, update, "Ошибка создания файлов: "+err.Error())
 		return
 	}
 	a.setReady(chatID, true)
-	a.logf(chatID, "create_files_success domain=%q ip=%q", a.cfg.DomainList, a.cfg.IPList)
+	a.logf(chatID, "create_files_success files=%q", strings.Join(missing, ","))
 	a.answerAndEditMarkup(ctx, b, update, a.welcomeText(ctx), a.mainMenuInlineKeyboard())
 	a.ensureReplyKeyboard(ctx, b, chatID)
 }
@@ -884,20 +921,12 @@ func (a *App) formatRestartResult(ctx context.Context, chatID int64, res service
 	if res.Success {
 		text := fmt.Sprintf("✅ %s перезапущен (%ds).", label, durationSec)
 		if isPodkopCommand(a.cfg.RestartCmd) {
-			bindings, err := service.CheckPodkopBindings(ctx, a.cfg.DomainList, a.cfg.IPList)
+			secs, err := podkop.Sections(ctx)
 			if err != nil {
-				a.logf(chatID, "podkop_binding_check_error err=%v", err)
-			} else if !bindings.DomainBound || !bindings.IPBound {
-				missing := make([]string, 0, 2)
-				if !bindings.DomainBound {
-					missing = append(missing, "• local_domain_lists: "+a.cfg.DomainList)
-				}
-				if !bindings.IPBound {
-					missing = append(missing, "• local_subnet_lists: "+a.cfg.IPList)
-				}
-				text += "\n\n⚠️ Podkop перезапущен, но файлы не привязаны в /etc/config/podkop:\n" +
-					strings.Join(missing, "\n") +
-					"\n\nДобавьте эти пути в нужной секции Podkop (Sections -> Local lists), затем перезапустите Podkop снова."
+				a.logf(chatID, "podkop_sections_error err=%v", err)
+			} else if !anyListBound(secs) {
+				text += "\n\n⚠️ Podkop перезапущен, но ни в одной его секции нет привязанных списков.\n" +
+					"Откройте «" + btnManage + "», выберите секцию и привяжите файл."
 			}
 		}
 		if res.Output != "" {
@@ -925,29 +954,38 @@ func (a *App) podkopIntegrationText(ctx context.Context) (string, bool) {
 	if !isPodkopCommand(a.cfg.RestartCmd) {
 		return "", false
 	}
-	st, err := service.CheckPodkopBindings(ctx, a.cfg.DomainList, a.cfg.IPList)
+	secs, err := podkop.Sections(ctx)
 	if err != nil {
-		return "Не удалось проверить интеграцию Podkop: " + err.Error(), true
+		return "Не удалось прочитать конфиг podkop: " + err.Error(), true
+	}
+	if len(secs) == 0 {
+		return "🔗 В конфиге podkop нет секций.", true
 	}
 
-	domainLine := "❌ не подключен"
-	if st.DomainBound {
-		domainLine = "✅ подключен"
+	var sb strings.Builder
+	sb.WriteString("🔗 Списки в секциях Podkop:")
+	for _, s := range secs {
+		sb.WriteString("\n\n🗂 " + s.Name)
+		if s.ConnectionType != "" {
+			sb.WriteString(" · " + s.ConnectionType)
+		}
+		sb.WriteString("\n" + sectionBindingLine(s, lists.TypeDomain))
+		sb.WriteString("\n" + sectionBindingLine(s, lists.TypeIP))
 	}
-	ipLine := "❌ не подключен"
-	if st.IPBound {
-		ipLine = "✅ подключен"
+	if !anyListBound(secs) {
+		sb.WriteString("\n\nНи один файл не привязан. Откройте «" + btnManage + "» и привяжите файл к нужной секции.")
 	}
-	text := "🔗 Проверка интеграции Podkop:\n" +
-		"• local_domain_lists: " + domainLine + "\n" +
-		"• local_subnet_lists: " + ipLine
+	return sb.String(), true
+}
 
-	if !st.DomainBound || !st.IPBound {
-		text += "\n\nДобавьте пути списков в нужную секцию Podkop (Sections -> Local lists):\n" +
-			"• " + a.cfg.DomainList + "\n" +
-			"• " + a.cfg.IPList
+// anyListBound reports whether podkop reads any list file at all.
+func anyListBound(secs []podkop.Section) bool {
+	for _, s := range secs {
+		if len(s.DomainLists) > 0 || len(s.SubnetLists) > 0 {
+			return true
+		}
 	}
-	return text, true
+	return false
 }
 
 func (a *App) answerAndEdit(ctx context.Context, b *tgbot.Bot, update *models.Update, text string) {
@@ -1031,6 +1069,12 @@ func buildListInputKeyboard(
 	if len(addRow) > 0 {
 		rows = append(rows, addRow)
 	}
+	// Always offered: even when every value is already in the file, the user
+	// may want to re-file them under a different category.
+	rows = append(rows, []models.InlineKeyboardButton{{
+		Text: btnAddToCategory, CallbackData: cbPrefix + opID + ":cat",
+	}})
+	hasActions = true
 
 	if canDelete {
 		rows = append(rows, []models.InlineKeyboardButton{{

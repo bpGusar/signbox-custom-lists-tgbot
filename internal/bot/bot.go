@@ -13,6 +13,7 @@ import (
 
 	"lst-signbox-lists-tgbot/internal/config"
 	"lst-signbox-lists-tgbot/internal/lists"
+	"lst-signbox-lists-tgbot/internal/podkop"
 	"lst-signbox-lists-tgbot/internal/service"
 	"lst-signbox-lists-tgbot/internal/version"
 )
@@ -24,6 +25,9 @@ type App struct {
 	readyMu    sync.Mutex
 	ready      map[int64]bool
 	verChecker *version.Checker
+	// readSections reads podkop's config. It is a field so the screens can be
+	// exercised without a router to run uci on; nil means the real thing.
+	readSections func(context.Context) ([]podkop.Section, error)
 }
 
 func (a *App) isReady(chatID int64) bool {
@@ -39,15 +43,11 @@ func (a *App) setReady(chatID int64, ready bool) {
 }
 
 const (
-	menuCbPrefix           = "m:"
-	menuBtnMainMenu        = "🏠 Главное меню"
-	menuBtnDownloadIP      = "📥 Скачать IP"
-	menuBtnDownloadDomains = "📥 Скачать домены"
-	menuBtnViewIP          = "📋 Показать IP"
-	menuBtnViewDomains     = "📋 Показать домены"
-	menuBtnCheckPodkop     = "🔗 Проверить Podkop"
-	menuBtnSettings        = "⚙️ Настройки"
-	tgMaxMessageLen        = 4096
+	menuCbPrefix       = "m:"
+	menuBtnMainMenu    = "🏠 Главное меню"
+	menuBtnCheckPodkop = "🔗 Проверить Podkop"
+	menuBtnSettings    = "⚙️ Настройки"
+	tgMaxMessageLen    = 4096
 )
 
 func Run(ctx context.Context, cfg *config.Config) error {
@@ -86,6 +86,12 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	b.RegisterHandler(tgbot.HandlerTypeMessageText, "/start", tgbot.MatchTypePrefix, app.handleStart)
 	b.RegisterHandler(tgbot.HandlerTypeMessageText, "/menu", tgbot.MatchTypeExact, app.handleShowMenu)
 	b.RegisterHandler(tgbot.HandlerTypeMessageText, "/hide", tgbot.MatchTypeExact, app.handleHideKeyboard)
+	// A list too long for a keyboard is picked by tapping a command inside the
+	// message, so each command family needs its own prefix handler.
+	b.RegisterHandler(tgbot.HandlerTypeMessageText, "/cd_", tgbot.MatchTypePrefix, app.handleViewCategoryCommand)
+	b.RegisterHandler(tgbot.HandlerTypeMessageText, "/ci_", tgbot.MatchTypePrefix, app.handleViewCategoryCommand)
+	b.RegisterHandler(tgbot.HandlerTypeMessageText, "/gd_", tgbot.MatchTypePrefix, app.handleAddCategoryCommand)
+	b.RegisterHandler(tgbot.HandlerTypeMessageText, "/gi_", tgbot.MatchTypePrefix, app.handleAddCategoryCommand)
 	b.RegisterHandler(tgbot.HandlerTypeCallbackQueryData, "s:", tgbot.MatchTypePrefix, app.handleCallback)
 	b.RegisterHandler(tgbot.HandlerTypeCallbackQueryData, menuCbPrefix, tgbot.MatchTypePrefix, app.handleMenuCallback)
 
@@ -178,18 +184,28 @@ func (a *App) defaultHandler(ctx context.Context, b *tgbot.Bot, update *models.U
 		return
 	}
 	text := strings.TrimSpace(update.Message.Text)
+	chatID := update.Message.Chat.ID
 	if isStartCommand(text) {
+		a.sess.ClearAwait(chatID)
 		a.handleStart(ctx, b, update)
 		return
 	}
-	if a.handleMenuAction(ctx, b, update.Message.Chat.ID, text) {
+	if a.handleMenuAction(ctx, b, chatID, text) {
+		a.sess.ClearAwait(chatID)
+		return
+	}
+	// A message the bot explicitly asked for — a category name, a file path —
+	// is not list input, so it is consumed before the parser sees it. It also
+	// comes before the command guard below, because a path starts with the
+	// same slash a command does.
+	if kind, opID := a.sess.TakeAwait(chatID); kind != awaitNone {
+		a.handleAwaitedText(ctx, b, update, kind, opID, text)
 		return
 	}
 	if strings.HasPrefix(text, "/") {
 		return
 	}
 
-	chatID := update.Message.Chat.ID
 	if !a.isReady(chatID) {
 		a.sendStartCheck(ctx, b, chatID)
 		return
@@ -267,13 +283,6 @@ func isStartCommand(text string) bool {
 	cmd = strings.TrimPrefix(cmd, "/")
 	cmd = strings.SplitN(cmd, "@", 2)[0]
 	return strings.EqualFold(cmd, "start")
-}
-
-func listPath(cfg *config.Config, t lists.EntryType) string {
-	if t == lists.TypeDomain {
-		return cfg.DomainList
-	}
-	return cfg.IPList
 }
 
 func typeLabel(t lists.EntryType) string {
