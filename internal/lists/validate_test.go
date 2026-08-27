@@ -90,28 +90,22 @@ func TestParseInputInlineComment(t *testing.T) {
 	}
 }
 
-func TestSortDomainLines(t *testing.T) {
-	lines := []string{
-		"www.zebra.com",
-		"zebra.com",
-		"// apple.com",
-		"api.beta.com",
-		"alpha.org",
+func TestSortGroupByBaseDomain(t *testing.T) {
+	entries := []LineEntry{
+		{Value: "www.zebra.com"},
+		{Value: "zebra.com"},
+		{Value: "apple.com", Disabled: true},
+		{Value: "api.beta.com"},
+		{Value: "alpha.org"},
 	}
-	got := sortDomainLines(lines)
-	// Grouped by base domain (eTLD+1) first, alphabetically: alpha.org,
-	// then api.beta.com (base domain "beta.com"), then the zebra.com group
-	// where "www.zebra.com" sorts before "zebra.com" itself.
-	want := []string{
-		"alpha.org",
-		"// apple.com",
-		"api.beta.com",
-		"www.zebra.com",
-		"zebra.com",
-	}
+	got := sortGroup(entries, TypeDomain)
+	// Grouped by base domain (eTLD+1) first, alphabetically: alpha.org, then
+	// apple.com, then api.beta.com (base domain "beta.com"), then the
+	// zebra.com group where "www.zebra.com" sorts before "zebra.com" itself.
+	want := []string{"alpha.org", "apple.com", "api.beta.com", "www.zebra.com", "zebra.com"}
 	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("index %d: got %q want %q (full: %v)", i, got[i], want[i], got)
+		if got[i].Value != want[i] {
+			t.Fatalf("index %d: got %q want %q", i, got[i].Value, want[i])
 		}
 	}
 }
@@ -134,7 +128,7 @@ func TestAddDisableDelete(t *testing.T) {
 	dir := t.TempDir()
 	path := dir + "/list.lst"
 
-	if err := AddNew(path, []string{"a.com", "b.com"}, TypeDomain); err != nil {
+	if err := AddNew(path, []string{"a.com", "b.com"}, TypeDomain, Uncategorized); err != nil {
 		t.Fatal(err)
 	}
 	if err := DisableExistingOnly(path, []string{"a.com"}, TypeDomain); err != nil {
@@ -158,7 +152,7 @@ func TestAddDisableDelete(t *testing.T) {
 		t.Fatalf("classified wrong: new=%v active=%v dis=%v", newV, active, disabled)
 	}
 
-	if err := AddAll(path, []string{"a.com", "c.com"}, TypeDomain); err != nil {
+	if err := AddAll(path, []string{"a.com", "c.com"}, TypeDomain, Uncategorized); err != nil {
 		t.Fatal(err)
 	}
 	entries, _ = ReadFile(path)

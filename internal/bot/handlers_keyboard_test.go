@@ -113,12 +113,8 @@ func TestMainMenuInlineKeyboard_baseActions(t *testing.T) {
 			texts = append(texts, btn.Text)
 		}
 	}
-	want := []string{
-		menuBtnDownloadIP, menuBtnDownloadDomains,
-		menuBtnViewIP, menuBtnViewDomains,
-	}
-	if !containsAll(texts, want...) {
-		t.Fatalf("expected base menu buttons, got %v", texts)
+	if !containsAll(texts, btnManage) {
+		t.Fatalf("expected the manage button, got %v", texts)
 	}
 	if !containsNone(texts, menuBtnMainMenu, menuBtnCheckPodkop, menuBtnSettings) {
 		t.Fatalf("unexpected buttons in inline menu: %v", texts)
