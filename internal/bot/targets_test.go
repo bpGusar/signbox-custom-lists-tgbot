@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"lst-signbox-lists-tgbot/internal/config"
@@ -88,26 +89,6 @@ func TestResolveTarget(t *testing.T) {
 	}
 	if _, err := a.resolveTarget(ctx, sectionToken("main"), "deadbeef", lists.TypeDomain); !errors.Is(err, errFileGone) {
 		t.Fatalf("missing file err = %v, want errFileGone", err)
-	}
-}
-
-func TestSectionsWithSkipsUnboundSections(t *testing.T) {
-	a := testApp(sampleSections, nil)
-
-	var names []string
-	for _, s := range a.sectionsWith(context.Background(), lists.TypeDomain) {
-		names = append(names, s.Name)
-	}
-	if !reflect.DeepEqual(names, []string{"main", "youtube"}) {
-		t.Fatalf("sections with a domain list = %v", names)
-	}
-
-	names = nil
-	for _, s := range a.sectionsWith(context.Background(), lists.TypeIP) {
-		names = append(names, s.Name)
-	}
-	if !reflect.DeepEqual(names, []string{"main"}) {
-		t.Fatalf("sections with a subnet list = %v", names)
 	}
 }
 
@@ -215,5 +196,43 @@ func TestMissingFilesCoversEverySection(t *testing.T) {
 func TestFileLabel(t *testing.T) {
 	if got := fileLabel("/etc/lst/domain_list.lst"); got != "domain_list.lst" {
 		t.Fatalf("file label = %q", got)
+	}
+}
+
+// The "куда добавить?" screen always lists every podkop section, including the
+// ones with no file for this list yet — that is where a new file gets bound.
+func TestAddTargetRows(t *testing.T) {
+	rows := addTargetRows(sampleSections, lists.TypeDomain, "op1")
+	got := make([]string, 0, len(rows))
+	for _, row := range rows {
+		got = append(got, row[0].Text)
+	}
+	want := []string{"🗂 main · 2 файла", "🔗 Exclude · нет файла", "🗂 youtube"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("domain rows = %v, want %v", got, want)
+	}
+
+	rows = addTargetRows(sampleSections, lists.TypeIP, "op1")
+	got = got[:0]
+	for _, row := range rows {
+		got = append(got, row[0].Text)
+	}
+	want = []string{"🗂 main", "🔗 Exclude · нет файла", "🔗 youtube · нет файла"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ip rows = %v, want %v", got, want)
+	}
+
+	// Every row carries the operation, so a tap in an older message still
+	// applies to that message's entries.
+	for _, row := range rows {
+		if !strings.HasPrefix(row[0].CallbackData, cbPrefix+"op1:"+cbSectionPrefix) {
+			t.Fatalf("unexpected callback %q", row[0].CallbackData)
+		}
+	}
+
+	// The synthetic section is not in podkop's config: there is nothing to
+	// bind a file to, so an empty one is not offered.
+	if rows := addTargetRows([]podkop.Section{{}}, lists.TypeDomain, "op1"); len(rows) != 0 {
+		t.Fatalf("expected no rows for an empty fallback section, got %+v", rows)
 	}
 }

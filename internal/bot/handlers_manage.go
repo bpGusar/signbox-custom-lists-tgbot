@@ -267,21 +267,26 @@ func (a *App) startBind(ctx context.Context, b *tgbot.Bot, update *models.Update
 		return
 	}
 	a.logf(chatID, "bind_prompt section=%q type=%s", s.Name, typeLabel(act.typ))
-	a.showBindConfirm(ctx, b, a.replyTo(update, chatID), s.Name, act.typ, a.suggestBindPath(s.Name, act.typ))
+	a.showBindConfirm(ctx, b, a.replyTo(update, chatID), PendingOp{
+		ChatID:   chatID,
+		Section:  s.Name,
+		ListType: act.typ,
+	}, a.suggestBindPath(s.Name, act.typ))
 }
 
 // showBindConfirm is the last screen before the podkop config is touched.
-func (a *App) showBindConfirm(ctx context.Context, b *tgbot.Bot, reply pickReply, sectionName string, t lists.EntryType, path string) {
-	opID := a.sess.Create(PendingOp{
-		ChatID:   reply.chatID,
-		Kind:     ActionBind,
-		Section:  sectionName,
-		ListType: t,
-		ListPath: path,
-	})
+func (a *App) showBindConfirm(ctx context.Context, b *tgbot.Bot, reply pickReply, base PendingOp, path string) {
+	base.Kind = ActionBind
+	base.ChatID = reply.chatID
+	base.ListPath = path
+	opID := a.sess.Create(base)
+
 	text := fmt.Sprintf(
 		"🔗 Привязать файл (%s) к секции «%s»:\n\n%s\n\nФайл будет создан, если его ещё нет, а путь добавлен в /etc/config/podkop. После этого podkop нужно перезапустить.",
-		typeLabel(t), sectionName, path)
+		typeLabel(base.ListType), base.Section, path)
+	if len(base.Values) > 0 {
+		text += fmt.Sprintf("\n\nПосле привязки вернёмся к вашим записям (%s).", pluralEntries(len(base.Values)))
+	}
 	kb := &models.InlineKeyboardMarkup{
 		InlineKeyboard: [][]models.InlineKeyboardButton{
 			{{Text: btnBindConfirm, CallbackData: cbPrefix + opID + ":confirm"}},
@@ -312,7 +317,12 @@ func (a *App) handleBindPathText(ctx context.Context, b *tgbot.Bot, chatID int64
 		return
 	}
 	a.sess.Delete(op.ID)
-	a.showBindConfirm(ctx, b, a.replyTo(nil, chatID), op.Section, op.ListType, path)
+	a.showBindConfirm(ctx, b, a.replyTo(nil, chatID), PendingOp{
+		ChatID:   chatID,
+		Section:  op.Section,
+		ListType: op.ListType,
+		Values:   op.Values,
+	}, path)
 }
 
 // execBind writes the binding into podkop's config and creates the file.
@@ -329,12 +339,22 @@ func (a *App) execBind(ctx context.Context, b *tgbot.Bot, update *models.Update,
 			a.backToSectionsInlineKeyboard())
 		return
 	}
-	a.logf(op.ChatID, "bind_success section=%q type=%s path=%q", op.Section, typeLabel(op.ListType), op.ListPath)
-	a.sess.Delete(op.ID)
+	a.logf(op.ChatID, "bind_success section=%q type=%s path=%q values=%d",
+		op.Section, typeLabel(op.ListType), op.ListPath, len(op.Values))
 
 	// The binding only takes effect on the next podkop restart, which is
 	// exactly what the stale banner and its button are for.
 	_ = a.svc.MarkFilesChanged()
+
+	// A binding started from "куда добавить?" still has the entries waiting.
+	if len(op.Values) > 0 {
+		a.showAddActions(ctx, b, a.replyTo(update, op.ChatID), op,
+			listTarget{Section: op.Section, Type: op.ListType, Path: op.ListPath},
+			fmt.Sprintf("🔗 Файл привязан к секции «%s».\n\n", op.Section))
+		return
+	}
+
+	a.sess.Delete(op.ID)
 	a.answerAndEditMarkup(ctx, b, update,
 		fmt.Sprintf("🔗 Файл привязан к секции «%s»:\n%s", op.Section, op.ListPath),
 		a.backToSectionInlineKeyboard(sectionToken(op.Section)))
