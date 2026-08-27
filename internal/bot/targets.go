@@ -163,18 +163,6 @@ func (a *App) allPaths(ctx context.Context) []string {
 	return out
 }
 
-// sectionsWith lists the sections that can take entries of this type, which is
-// what the "where should this go?" picker offers.
-func (a *App) sectionsWith(ctx context.Context, t lists.EntryType) []podkop.Section {
-	var out []podkop.Section
-	for _, s := range a.sections(ctx) {
-		if len(s.Lists(t)) > 0 {
-			out = append(out, s)
-		}
-	}
-	return out
-}
-
 // sharedWith names the other sections fed from the same file, so an edit that
 // reaches further than one section does not look local.
 func (a *App) sharedWith(ctx context.Context, tgt listTarget) []string {
