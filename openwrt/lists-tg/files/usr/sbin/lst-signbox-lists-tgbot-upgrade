@@ -19,6 +19,7 @@ LOG="/tmp/lst-signbox-lists-tgbot-upgrade.log"
 LOCK="/tmp/lst-signbox-lists-tgbot-upgrade.lock"
 VERSION_CACHE="/tmp/lst-signbox-lists-tgbot-upgrade.versions"
 RETRIES=3
+DOWNLOAD_TIMEOUT=60
 
 log() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
 
@@ -58,14 +59,23 @@ installed_version() {
 	opkg info lst-signbox-lists-tgbot 2>/dev/null | awk -F': ' '/^Version:/{print $2; exit}'
 }
 
+# Quiet on purpose: callers print JSON to stdout, so nothing here may log.
 fetch_api_response() {
+	local out=""
+
 	if command -v curl >/dev/null 2>&1; then
-		curl -fsSL --max-time 20 "$REPO_API" 2>/dev/null || true
-	elif command -v wget >/dev/null 2>&1; then
-		wget -qO- --timeout=20 "$REPO_API" 2>/dev/null || true
-	else
-		return 1
+		out="$(curl -fsSL --max-time 20 "$REPO_API" 2>/dev/null || true)"
+		[ -n "$out" ] && { printf '%s' "$out"; return 0; }
 	fi
+	if command -v wget >/dev/null 2>&1; then
+		out="$(wget -qO- -T 20 "$REPO_API" 2>/dev/null || true)"
+		[ -n "$out" ] && { printf '%s' "$out"; return 0; }
+	fi
+	if command -v uclient-fetch >/dev/null 2>&1; then
+		out="$(uclient-fetch -qO- -T 20 "$REPO_API" 2>/dev/null || true)"
+		[ -n "$out" ] && { printf '%s' "$out"; return 0; }
+	fi
+	return 1
 }
 
 fetch_latest_version() {
@@ -80,18 +90,64 @@ fetch_latest_version() {
 	normalize_ver "$tag"
 }
 
+# OpenWrt's default /usr/bin/wget is uclient-fetch, which on some builds
+# segfaults while following GitHub's redirect to objects.githubusercontent.com
+# and dies with "Failed to send request: Operation not permitted" on others.
+# curl copes with both, so try it first and fall back to whatever else is there.
+download_backends() {
+	local wget_bin uclient_bin
+
+	if command -v curl >/dev/null 2>&1; then
+		printf 'curl\n'
+	fi
+
+	wget_bin="$(command -v wget 2>/dev/null || true)"
+	uclient_bin="$(command -v uclient-fetch 2>/dev/null || true)"
+
+	if [ -n "$wget_bin" ]; then
+		printf 'wget\n'
+	fi
+	if [ -n "$uclient_bin" ] && \
+		[ "$(readlink -f "$wget_bin" 2>/dev/null || true)" != "$(readlink -f "$uclient_bin" 2>/dev/null || true)" ]; then
+		printf 'uclient-fetch\n'
+	fi
+	return 0
+}
+
+run_download_backend() {
+	local backend="$1"
+	local url="$2"
+	local dest="$3"
+
+	case "$backend" in
+		curl)          curl -fsS -L --connect-timeout 15 --max-time "$DOWNLOAD_TIMEOUT" -o "$dest" "$url" ;;
+		wget)          wget -q -T "$DOWNLOAD_TIMEOUT" -O "$dest" "$url" ;;
+		uclient-fetch) uclient-fetch -q -T "$DOWNLOAD_TIMEOUT" -O "$dest" "$url" ;;
+		*)             return 127 ;;
+	esac
+}
+
 download_file() {
 	local url="$1"
 	local dest="$2"
 	local attempt=0
+	local backend rc
 
 	while [ "$attempt" -lt "$RETRIES" ]; do
-		log "download $(basename "$dest") (attempt $((attempt + 1))/$RETRIES)"
-		if wget -q -O "$dest" "$url" && [ -s "$dest" ]; then
-			return 0
-		fi
-		rm -f "$dest"
 		attempt=$((attempt + 1))
+		for backend in $(download_backends); do
+			log "download $(basename "$dest") via ${backend} (attempt ${attempt}/${RETRIES})"
+			rc=0
+			run_download_backend "$backend" "$url" "$dest" || rc=$?
+			if [ "$rc" -eq 0 ] && [ -s "$dest" ]; then
+				return 0
+			fi
+			log "${backend} failed (exit ${rc})"
+			rm -f "$dest"
+		done
+		if [ "$attempt" -lt "$RETRIES" ]; then
+			sleep 2
+		fi
 	done
 	return 1
 }
@@ -291,6 +347,22 @@ opkg_install_retry() {
 	return 1
 }
 
+# Downloading is the step that fails first on a router whose only fetcher is a
+# broken uclient-fetch, so pull curl (and the CA bundle it needs) in before the
+# downloads rather than after them.
+prepare_download_tools() {
+	if command -v curl >/dev/null 2>&1; then
+		return 0
+	fi
+	log "curl not found, installing it for downloads"
+	opkg update >/dev/null 2>&1 || true
+	opkg_install_retry ca-bundle curl >/dev/null 2>&1 || true
+	if ! command -v curl >/dev/null 2>&1; then
+		log "curl unavailable, falling back to wget"
+	fi
+	return 0
+}
+
 install_packages() {
 	local arch="$1" lists_ipk luci_ipk
 
@@ -402,6 +474,7 @@ upgrade_main() {
 	write_version_cache "$(installed_version)" "$(fetch_latest_version || true)"
 
 	backup_current_config
+	prepare_download_tools
 	fetch_packages "$arch" || return 1
 	install_packages "$arch" || return 1
 	restore_config
