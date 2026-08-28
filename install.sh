@@ -21,6 +21,7 @@ DIST_RAW_URL="https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/${REP
 DOWNLOAD_DIR="/tmp/lst-signbox-lists-tgbot-install"
 INSTALL_LUCI="${LST_SIGNBOX_LISTS_TGBOT_INSTALL_LUCI:-${LISTS_TG_INSTALL_LUCI:-1}}"
 RETRIES=3
+DOWNLOAD_TIMEOUT=60
 PREV_ENABLED=""
 PREV_TOKEN=""
 PREV_DOMAIN_LIST=""
@@ -56,18 +57,64 @@ script_dir() {
 	esac
 }
 
+# OpenWrt's default /usr/bin/wget is uclient-fetch, which on some builds
+# segfaults while following GitHub's redirect to objects.githubusercontent.com
+# and dies with "Failed to send request: Operation not permitted" on others.
+# curl copes with both, so try it first and fall back to whatever else is there.
+download_backends() {
+	local wget_bin uclient_bin
+
+	if command -v curl >/dev/null 2>&1; then
+		printf 'curl\n'
+	fi
+
+	wget_bin="$(command -v wget 2>/dev/null || true)"
+	uclient_bin="$(command -v uclient-fetch 2>/dev/null || true)"
+
+	if [ -n "$wget_bin" ]; then
+		printf 'wget\n'
+	fi
+	if [ -n "$uclient_bin" ] && \
+		[ "$(readlink -f "$wget_bin" 2>/dev/null || true)" != "$(readlink -f "$uclient_bin" 2>/dev/null || true)" ]; then
+		printf 'uclient-fetch\n'
+	fi
+	return 0
+}
+
+run_download_backend() {
+	local backend="$1"
+	local url="$2"
+	local dest="$3"
+
+	case "$backend" in
+		curl)          curl -fsS -L --connect-timeout 15 --max-time "$DOWNLOAD_TIMEOUT" -o "$dest" "$url" ;;
+		wget)          wget -q -T "$DOWNLOAD_TIMEOUT" -O "$dest" "$url" ;;
+		uclient-fetch) uclient-fetch -q -T "$DOWNLOAD_TIMEOUT" -O "$dest" "$url" ;;
+		*)             return 127 ;;
+	esac
+}
+
 download_file() {
 	local url="$1"
 	local dest="$2"
 	local attempt=0
+	local backend rc
 
 	while [ "$attempt" -lt "$RETRIES" ]; do
-		log "download $(basename "$dest") (attempt $((attempt + 1))/$RETRIES)"
-		if wget -q -O "$dest" "$url" && [ -s "$dest" ]; then
-			return 0
-		fi
-		rm -f "$dest"
 		attempt=$((attempt + 1))
+		for backend in $(download_backends); do
+			log "download $(basename "$dest") via ${backend} (attempt ${attempt}/${RETRIES})"
+			rc=0
+			run_download_backend "$backend" "$url" "$dest" || rc=$?
+			if [ "$rc" -eq 0 ] && [ -s "$dest" ]; then
+				return 0
+			fi
+			log "${backend} failed (exit ${rc})"
+			rm -f "$dest"
+		done
+		if [ "$attempt" -lt "$RETRIES" ]; then
+			sleep 2
+		fi
 	done
 	return 1
 }
@@ -214,6 +261,8 @@ fetch_packages() {
 	if fetch_from_local "$arch"; then
 		return 0
 	fi
+
+	prepare_download_tools
 	if fetch_from_release "$arch"; then
 		return 0
 	fi
@@ -259,6 +308,22 @@ opkg_install_tolerant() {
 	fi
 	[ -n "$out" ] && printf '%s\n' "$out" >&2
 	return 1
+}
+
+# Downloading is the step that fails first on a router whose only fetcher is a
+# broken uclient-fetch, so pull curl (and the CA bundle it needs) in before the
+# downloads rather than after them.
+prepare_download_tools() {
+	if command -v curl >/dev/null 2>&1; then
+		return 0
+	fi
+	log "curl not found, installing it for downloads"
+	opkg update >/dev/null 2>&1 || true
+	opkg install ca-bundle curl >/dev/null 2>&1 || true
+	if ! command -v curl >/dev/null 2>&1; then
+		log "curl unavailable, falling back to wget"
+	fi
+	return 0
 }
 
 install_packages() {
