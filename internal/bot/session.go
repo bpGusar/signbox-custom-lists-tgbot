@@ -1,12 +1,15 @@
 package bot
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"sync"
 	"time"
 
 	"lst-signbox-lists-tgbot/internal/lists"
+	"lst-signbox-lists-tgbot/internal/probe"
+	"lst-signbox-lists-tgbot/internal/proxylink"
 )
 
 type ActionKind int
@@ -59,6 +62,8 @@ const (
 	awaitRename
 	// awaitBindPath: the text is a file path to bind to a podkop section.
 	awaitBindPath
+	// awaitMaxPing: the text is a latency threshold for a proxy import.
+	awaitMaxPing
 )
 
 // chatState holds the one thing no message can carry on its own: what the bot
@@ -70,21 +75,158 @@ type chatState struct {
 	updated   time.Time
 }
 
+// linkResult is one link's measurement, whichever stage produced it.
+type linkResult struct {
+	Latency time.Duration
+	OK      bool
+	// Reason explains a failure in a form fit for a chat message.
+	Reason string
+}
+
+// ProxyImport is a subscription file being turned into podkop's link list. It
+// does not fit PendingOp: it outlives several screens, carries a running
+// measurement, and is mutated from a background goroutine.
+type ProxyImport struct {
+	ID       string
+	ChatID   int64
+	FileName string
+	Links    []proxylink.Link
+	Stats    proxylink.Stats
+	MaxPing  time.Duration
+	// Results is keyed by Link.DedupKey.
+	Results map[string]linkResult
+	// Method is what the surviving numbers were measured with.
+	Method probe.Method
+	// Tunnel says stage B ran, so Method is not the whole story.
+	Tunnel bool
+	// TunnelNote explains why stage B did not run, when it did not.
+	TunnelNote string
+	Section    string
+	Running    bool
+	// MessageID is the message the progress and the report are written into,
+	// because the run outlives the update that started it.
+	MessageID int
+	cancel    context.CancelFunc
+	Created   time.Time
+}
+
+// Passed is the links that made it under the threshold, fastest first.
+func (p *ProxyImport) Passed() []proxylink.Link {
+	var out []proxylink.Link
+	for _, l := range p.Links {
+		if r, ok := p.Results[l.DedupKey()]; ok && r.OK && r.Latency <= p.MaxPing {
+			out = append(out, l)
+		}
+	}
+	sortByLatency(out, p.Results)
+	return out
+}
+
+// Failed is everything else: too slow, or never answered.
+func (p *ProxyImport) Failed() []proxylink.Link {
+	var out []proxylink.Link
+	for _, l := range p.Links {
+		if r, ok := p.Results[l.DedupKey()]; !ok || !r.OK || r.Latency > p.MaxPing {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+func sortByLatency(links []proxylink.Link, results map[string]linkResult) {
+	for i := 1; i < len(links); i++ {
+		for j := i; j > 0 && results[links[j].DedupKey()].Latency < results[links[j-1].DedupKey()].Latency; j-- {
+			links[j], links[j-1] = links[j-1], links[j]
+		}
+	}
+}
+
 type SessionStore struct {
-	mu    sync.Mutex
-	ops   map[string]*PendingOp
-	chats map[int64]*chatState
-	ttl   time.Duration
+	mu      sync.Mutex
+	ops     map[string]*PendingOp
+	imports map[string]*ProxyImport
+	chats   map[int64]*chatState
+	ttl     time.Duration
 }
 
 func NewSessionStore() *SessionStore {
 	s := &SessionStore{
-		ops:   make(map[string]*PendingOp),
-		chats: make(map[int64]*chatState),
-		ttl:   30 * time.Minute,
+		ops:     make(map[string]*PendingOp),
+		imports: make(map[string]*ProxyImport),
+		chats:   make(map[int64]*chatState),
+		ttl:     30 * time.Minute,
 	}
 	go s.cleanupLoop()
 	return s
+}
+
+// clone is what leaves the store: an import is mutated by the measuring
+// goroutine while the chat handlers read it, so nothing outside the store's
+// lock ever holds the stored struct itself. The cancel function stays behind —
+// stopping a run goes through the store.
+func (p *ProxyImport) clone() *ProxyImport {
+	out := *p
+	out.cancel = nil
+	out.Links = append([]proxylink.Link(nil), p.Links...)
+	out.Results = make(map[string]linkResult, len(p.Results))
+	for k, v := range p.Results {
+		out.Results[k] = v
+	}
+	return &out
+}
+
+// CreateImport stores imp under a fresh id and returns a copy of it.
+func (s *SessionStore) CreateImport(imp ProxyImport) *ProxyImport {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	stored := imp
+	stored.ID = randomID()
+	stored.Created = time.Now()
+	if stored.Results == nil {
+		stored.Results = make(map[string]linkResult)
+	}
+	s.imports[stored.ID] = &stored
+	return stored.clone()
+}
+
+func (s *SessionStore) GetImport(id string) (*ProxyImport, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	imp, ok := s.imports[id]
+	if !ok {
+		return nil, false
+	}
+	if time.Since(imp.Created) > s.ttl {
+		delete(s.imports, id)
+		return nil, false
+	}
+	return imp.clone(), true
+}
+
+// UpdateImport applies apply under the store's lock, which is the only thing
+// standing between the measuring goroutine and the chat handlers.
+func (s *SessionStore) UpdateImport(id string, apply func(*ProxyImport)) (*ProxyImport, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	imp, ok := s.imports[id]
+	if !ok {
+		return nil, false
+	}
+	apply(imp)
+	return imp.clone(), true
+}
+
+func (s *SessionStore) DeleteImport(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if imp, ok := s.imports[id]; ok && imp.cancel != nil {
+		imp.cancel()
+	}
+	delete(s.imports, id)
 }
 
 // Create stores op and returns its id; Values and Origin are copied so the
@@ -180,6 +322,14 @@ func (s *SessionStore) cleanupLoop() {
 		for id, op := range s.ops {
 			if now.Sub(op.Created) > s.ttl {
 				delete(s.ops, id)
+			}
+		}
+		for id, imp := range s.imports {
+			if now.Sub(imp.Created) > s.ttl {
+				if imp.cancel != nil {
+					imp.cancel()
+				}
+				delete(s.imports, id)
 			}
 		}
 		for id, st := range s.chats {

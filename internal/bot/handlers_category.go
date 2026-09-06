@@ -522,6 +522,13 @@ func (a *App) promptNewCategory(ctx context.Context, b *tgbot.Bot, update *model
 func (a *App) handleAwaitedText(ctx context.Context, b *tgbot.Bot, update *models.Update, kind awaitKind, opID, text string) {
 	chatID := update.Message.Chat.ID
 
+	// A latency threshold belongs to a proxy import, which lives in its own
+	// store — the pending operation lookup below would never find it.
+	if kind == awaitMaxPing {
+		a.handleMaxPingText(ctx, b, chatID, opID, text)
+		return
+	}
+
 	// The user may ignore the prompt and just send the next list instead of a
 	// name. Anything that parses cleanly as domains or IPs is treated as list
 	// input rather than silently becoming a category called "vk.com".

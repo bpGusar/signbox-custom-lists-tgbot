@@ -93,6 +93,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	b.RegisterHandler(tgbot.HandlerTypeMessageText, "/gd_", tgbot.MatchTypePrefix, app.handleAddCategoryCommand)
 	b.RegisterHandler(tgbot.HandlerTypeMessageText, "/gi_", tgbot.MatchTypePrefix, app.handleAddCategoryCommand)
 	b.RegisterHandler(tgbot.HandlerTypeCallbackQueryData, "s:", tgbot.MatchTypePrefix, app.handleCallback)
+	b.RegisterHandler(tgbot.HandlerTypeCallbackQueryData, proxyCbPrefix, tgbot.MatchTypePrefix, app.handleProxyCallback)
 	b.RegisterHandler(tgbot.HandlerTypeCallbackQueryData, menuCbPrefix, tgbot.MatchTypePrefix, app.handleMenuCallback)
 
 	log.Println("lst-signbox-lists-tgbot started")
@@ -180,7 +181,21 @@ func (a *App) logf(chatID int64, format string, args ...any) {
 }
 
 func (a *App) defaultHandler(ctx context.Context, b *tgbot.Bot, update *models.Update) {
-	if update.Message == nil || update.Message.Text == "" {
+	if update.Message == nil {
+		return
+	}
+	// A document is the one input that carries no text at all: a subscription
+	// file with proxy links.
+	if update.Message.Document != nil {
+		chatID := update.Message.Chat.ID
+		if !a.isReady(chatID) {
+			a.sendStartCheck(ctx, b, chatID)
+			return
+		}
+		a.handleDocument(ctx, b, update)
+		return
+	}
+	if update.Message.Text == "" {
 		return
 	}
 	text := strings.TrimSpace(update.Message.Text)
