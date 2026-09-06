@@ -72,6 +72,11 @@ const (
 type chatState struct {
 	await     awaitKind
 	awaitOpID string
+	// proxyFile says the chat has been shown what a subscription file must
+	// look like, so a document may now be read as one. It lives beside await
+	// rather than inside it: a document and a text message are different
+	// channels, and typing something must not disarm the file upload.
+	proxyFile bool
 	updated   time.Time
 }
 
@@ -305,6 +310,25 @@ func (s *SessionStore) TakeAwait(chatID int64) (awaitKind, string) {
 	kind, opID := st.await, st.awaitOpID
 	st.await, st.awaitOpID = awaitNone, ""
 	return kind, opID
+}
+
+// ArmProxyFile lets the chat's next document be read as a subscription file.
+func (s *SessionStore) ArmProxyFile(chatID int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.chatLocked(chatID).proxyFile = true
+}
+
+func (s *SessionStore) ProxyFileArmed(chatID int64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.chatLocked(chatID).proxyFile
+}
+
+func (s *SessionStore) DisarmProxyFile(chatID int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.chatLocked(chatID).proxyFile = false
 }
 
 func (s *SessionStore) ClearAwait(chatID int64) {

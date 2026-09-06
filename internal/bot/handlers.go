@@ -26,6 +26,7 @@ func (a *App) handleStart(ctx context.Context, b *tgbot.Bot, update *models.Upda
 }
 
 func (a *App) sendStartCheck(ctx context.Context, b *tgbot.Bot, chatID int64) {
+	a.sess.DisarmProxyFile(chatID)
 	missing := a.missingFiles(ctx)
 	if len(missing) > 0 {
 		a.logf(chatID, "start_check missing_files=%s", strings.Join(missing, ","))
@@ -190,6 +191,7 @@ func (a *App) ensureReplyKeyboard(ctx context.Context, b *tgbot.Bot, chatID int6
 func (a *App) mainMenuInlineKeyboard() *models.InlineKeyboardMarkup {
 	rows := [][]models.InlineKeyboardButton{
 		{{Text: btnManage, CallbackData: menuCbPrefix + "manage"}},
+		{{Text: btnProxyLinks, CallbackData: menuCbPrefix + menuActionProxyLinks}},
 	}
 	if a.hasSettingsMenu() {
 		rows = append(rows, []models.InlineKeyboardButton{{
@@ -262,6 +264,12 @@ func (a *App) handleMenuCallback(ctx context.Context, b *tgbot.Bot, update *mode
 	chatID := update.CallbackQuery.Message.Message.Chat.ID
 	action := strings.TrimPrefix(update.CallbackQuery.Data, menuCbPrefix)
 
+	// Leaving the upload screen for anything else takes the file expectation
+	// with it: a document must always come right after the instructions.
+	if action != menuActionProxyLinks {
+		a.sess.DisarmProxyFile(chatID)
+	}
+
 	_, _ = b.AnswerCallbackQuery(ctx, &tgbot.AnswerCallbackQueryParams{
 		CallbackQueryID: update.CallbackQuery.ID,
 	})
@@ -282,6 +290,9 @@ func (a *App) handleMenuCallback(ctx context.Context, b *tgbot.Bot, update *mode
 	case "manage":
 		a.logf(chatID, "menu manage")
 		a.showSections(ctx, b, update)
+	case menuActionProxyLinks:
+		a.logf(chatID, "menu proxy_links")
+		a.showProxyUploadHint(ctx, b, update, chatID)
 	case "check_podkop":
 		a.logf(chatID, "menu check_podkop")
 		text, ok := a.podkopIntegrationText(ctx)

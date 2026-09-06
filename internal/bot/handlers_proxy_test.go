@@ -191,13 +191,55 @@ func TestPluralLinks(t *testing.T) {
 	}
 }
 
-func TestImportStoreLifecycle(t *testing.T) {
-	s := &SessionStore{
+func TestProxyUploadHintText(t *testing.T) {
+	text := proxyUploadHintText()
+	for _, want := range []string{"vless", "ss", "trojan", "hysteria2", "⚡", "LTE", "1024 КБ", "5000", "300"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("upload hint is missing %q:\n%s", want, text)
+		}
+	}
+}
+
+// A document is taken only after the upload screen has been shown, and one
+// screen arms exactly one import.
+func TestProxyFileArming(t *testing.T) {
+	s := newTestStore(time.Minute)
+
+	if s.ProxyFileArmed(1) {
+		t.Fatal("a chat that has seen nothing must not accept a file")
+	}
+	s.ArmProxyFile(1)
+	if !s.ProxyFileArmed(1) {
+		t.Fatal("the upload screen must arm the chat")
+	}
+	if s.ProxyFileArmed(2) {
+		t.Fatal("arming is per chat")
+	}
+
+	// Typing something is a different channel and must not disarm the upload.
+	s.Await(1, awaitNewCategory, "op1")
+	s.TakeAwait(1)
+	if !s.ProxyFileArmed(1) {
+		t.Fatal("a text message must not disarm the file upload")
+	}
+
+	s.DisarmProxyFile(1)
+	if s.ProxyFileArmed(1) {
+		t.Fatal("leaving the screen must disarm the chat")
+	}
+}
+
+func newTestStore(ttl time.Duration) *SessionStore {
+	return &SessionStore{
 		ops:     map[string]*PendingOp{},
 		imports: map[string]*ProxyImport{},
 		chats:   map[int64]*chatState{},
-		ttl:     time.Minute,
+		ttl:     ttl,
 	}
+}
+
+func TestImportStoreLifecycle(t *testing.T) {
+	s := newTestStore(time.Minute)
 
 	imp := s.CreateImport(ProxyImport{ChatID: 7})
 	if _, ok := s.GetImport(imp.ID); !ok {
@@ -222,12 +264,7 @@ func TestImportStoreLifecycle(t *testing.T) {
 }
 
 func TestImportStoreExpires(t *testing.T) {
-	s := &SessionStore{
-		ops:     map[string]*PendingOp{},
-		imports: map[string]*ProxyImport{},
-		chats:   map[int64]*chatState{},
-		ttl:     time.Millisecond,
-	}
+	s := newTestStore(time.Millisecond)
 	imp := s.CreateImport(ProxyImport{ChatID: 7})
 	time.Sleep(5 * time.Millisecond)
 	if _, ok := s.GetImport(imp.ID); ok {
