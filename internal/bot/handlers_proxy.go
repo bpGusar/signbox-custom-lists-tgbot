@@ -23,6 +23,12 @@ import (
 // works on a ProxyImport, not on the PendingOp everything under "s:" expects.
 const proxyCbPrefix = "p:"
 
+const (
+	btnProxyLinks = "🔗 Управление ссылками прокси"
+	// menuActionProxyLinks opens the screen that arms the file upload.
+	menuActionProxyLinks = "proxy_links"
+)
+
 // Actions carried by the import screens.
 const (
 	cbProxyDefaultPing = "def"
@@ -47,6 +53,41 @@ const (
 	progressInterval = 3 * time.Second
 )
 
+// showProxyUploadHint says what a subscription file must look like and arms
+// the chat for it: a document is accepted only once this has been read.
+func (a *App) showProxyUploadHint(ctx context.Context, b *tgbot.Bot, update *models.Update, chatID int64) {
+	a.sess.ArmProxyFile(chatID)
+	a.editCallbackMessageMarkup(ctx, b, update, proxyUploadHintText(), a.backToMainMenuInlineKeyboard())
+}
+
+func proxyUploadHintText() string {
+	limits := proxylink.DefaultLimits()
+	return btnProxyLinks + "\n\n" +
+		"📎 Пришлите файл со ссылками на конфиги — обычным документом в этот чат.\n\n" +
+		"Каким должен быть файл:\n" +
+		"• текстовый (.txt), одна ссылка в строке\n" +
+		"• схемы: vless, ss, trojan, socks4, socks4a, socks5, hysteria2 (hy2)\n" +
+		"• берутся только ссылки с ⚡ в названии\n" +
+		"• строки с LTE в названии и дубли отбрасываются\n" +
+		fmt.Sprintf("• не больше %d КБ, %d строк и %d ссылок\n\n", limits.MaxBytes/1024, limits.MaxLines, limits.MaxLinks) +
+		"Что будет дальше:\n" +
+		"1. бот покажет, что нашёл в файле\n" +
+		"2. спросит порог задержки\n" +
+		"3. проверит ссылки и покажет отчёт\n" +
+		"4. предложит записать прошедшие в секцию podkop\n\n" +
+		"Жду файл."
+}
+
+// proxyUploadRequiredKeyboard points at the screen a file has to come after.
+func (a *App) proxyUploadRequiredKeyboard() *models.InlineKeyboardMarkup {
+	return &models.InlineKeyboardMarkup{
+		InlineKeyboard: [][]models.InlineKeyboardButton{
+			{{Text: btnProxyLinks, CallbackData: menuCbPrefix + menuActionProxyLinks}},
+			{{Text: menuBtnMainMenu, CallbackData: menuCbPrefix + "main_menu"}},
+		},
+	}
+}
+
 // handleDocument takes a subscription file sent into the chat. It is the only
 // thing the bot does with a document, so there is no file type to pick.
 func (a *App) handleDocument(ctx context.Context, b *tgbot.Bot, update *models.Update) {
@@ -54,12 +95,25 @@ func (a *App) handleDocument(ctx context.Context, b *tgbot.Bot, update *models.U
 	doc := update.Message.Document
 	a.sess.ClearAwait(chatID)
 
+	if !a.sess.ProxyFileArmed(chatID) {
+		a.logf(chatID, "proxy_import not_armed name=%q", doc.FileName)
+		a.sendPlain(ctx, b, chatID,
+			"📎 Бот не ждёт файл.\n\nЧтобы загрузить список прокси-ссылок, откройте «"+
+				btnProxyLinks+"» — там сказано, каким должен быть файл, и после этого бот его примет.",
+			a.proxyUploadRequiredKeyboard())
+		return
+	}
+
 	limits := proxylink.DefaultLimits()
 	a.logf(chatID, "proxy_import document name=%q size=%d", doc.FileName, doc.FileSize)
 
+	// A file that did not work out leaves the chat armed: the next one can be
+	// sent straight away, without walking back through the menu.
+	const retryHint = "\n\nМожно прислать другой файл."
+
 	if doc.FileSize > limits.MaxBytes {
 		a.sendPlain(ctx, b, chatID,
-			fmt.Sprintf("❌ Файл больше %d КБ — это не похоже на список ссылок.", limits.MaxBytes/1024),
+			fmt.Sprintf("❌ Файл больше %d КБ — это не похоже на список ссылок.", limits.MaxBytes/1024)+retryHint,
 			a.backToMainMenuInlineKeyboard())
 		return
 	}
@@ -67,24 +121,25 @@ func (a *App) handleDocument(ctx context.Context, b *tgbot.Bot, update *models.U
 	data, err := a.downloadDocument(ctx, b, doc, limits.MaxBytes)
 	if err != nil {
 		a.logf(chatID, "proxy_import download_error err=%v", err)
-		a.sendPlain(ctx, b, chatID, "❌ Не удалось скачать файл: "+err.Error(), a.backToMainMenuInlineKeyboard())
+		a.sendPlain(ctx, b, chatID, "❌ Не удалось скачать файл: "+err.Error()+retryHint, a.backToMainMenuInlineKeyboard())
 		return
 	}
 
 	links, stats, err := proxylink.ParseAll(bytes.NewReader(data), limits)
 	if err != nil {
 		a.logf(chatID, "proxy_import parse_error err=%v", err)
-		a.sendPlain(ctx, b, chatID, "❌ Не удалось разобрать файл: "+err.Error(), a.backToMainMenuInlineKeyboard())
+		a.sendPlain(ctx, b, chatID, "❌ Не удалось разобрать файл: "+err.Error()+retryHint, a.backToMainMenuInlineKeyboard())
 		return
 	}
 	a.logf(chatID, "proxy_import parsed lines=%d parsed=%d bolt=%d lte=%d collapsed=%d kept=%d targets=%d",
 		stats.Lines, stats.Parsed, stats.Bolt, stats.LTE, stats.Collapsed, stats.Kept, stats.Targets)
 
 	if len(links) == 0 {
-		a.sendPlain(ctx, b, chatID, importStatsText(doc.FileName, stats)+"\n\n"+noLinksHint(stats),
+		a.sendPlain(ctx, b, chatID, importStatsText(doc.FileName, stats)+"\n\n"+noLinksHint(stats)+retryHint,
 			a.backToMainMenuInlineKeyboard())
 		return
 	}
+	a.sess.DisarmProxyFile(chatID)
 
 	imp := a.sess.CreateImport(ProxyImport{
 		ChatID:   chatID,

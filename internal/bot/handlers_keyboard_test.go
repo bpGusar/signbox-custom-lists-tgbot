@@ -113,8 +113,8 @@ func TestMainMenuInlineKeyboard_baseActions(t *testing.T) {
 			texts = append(texts, btn.Text)
 		}
 	}
-	if !containsAll(texts, btnManage) {
-		t.Fatalf("expected the manage button, got %v", texts)
+	if !containsAll(texts, btnManage, btnProxyLinks) {
+		t.Fatalf("expected the manage and proxy links buttons, got %v", texts)
 	}
 	if !containsNone(texts, menuBtnMainMenu, menuBtnCheckPodkop, menuBtnSettings) {
 		t.Fatalf("unexpected buttons in inline menu: %v", texts)
@@ -138,6 +138,25 @@ func TestMainMenuInlineKeyboard_withSettings(t *testing.T) {
 	}
 	if !containsNone(texts, app.menuBtnRestart(), menuBtnCheckPodkop) {
 		t.Fatalf("restart and podkop should be in settings, not main menu: %v", texts)
+	}
+}
+
+func TestMainMenuInlineKeyboard_proxyLinksSitsBetweenManageAndSettings(t *testing.T) {
+	app := &App{cfg: &config.Config{
+		RestartCmd:   "/etc/init.d/podkop restart",
+		ServiceLabel: "Podkop",
+	}}
+	kb := app.mainMenuInlineKeyboard()
+	var texts []string
+	for _, row := range kb.InlineKeyboard {
+		texts = append(texts, row[0].Text)
+	}
+	want := []string{btnManage, btnProxyLinks, menuBtnSettings}
+	if strings.Join(texts, "|") != strings.Join(want, "|") {
+		t.Fatalf("main menu = %v, want %v", texts, want)
+	}
+	if cb := kb.InlineKeyboard[1][0].CallbackData; cb != menuCbPrefix+menuActionProxyLinks {
+		t.Fatalf("proxy links callback = %q", cb)
 	}
 }
 
