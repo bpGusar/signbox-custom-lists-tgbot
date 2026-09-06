@@ -41,6 +41,9 @@ podkop.settings.dns_type='udp'
 podkop.settings.download_lists_via_proxy_section='main'
 podkop.main=section
 podkop.main.connection_type='proxy'
+podkop.main.proxy_config_type='urltest'
+podkop.main.urltest_proxy_links='vless://a@1.2.3.4:8443#%E2%9A%A1%20one' 'vless://b@1.2.3.4:8443#%E2%9A%A1%20two'
+podkop.main.selector_proxy_links='vless://stale@9.9.9.9:443#old'
 podkop.main.user_domain_list_type='disabled'
 podkop.main.local_domain_lists='/etc/lst/domain_list.lst' '/etc/lst/extra.lst'
 podkop.main.local_subnet_lists='/etc/lst/ip_list.lst'
@@ -54,6 +57,8 @@ podkop.fake.local_domain_lists='/etc/passwd'
 test.com'
 podkop.youtube=section
 podkop.youtube.connection_type='proxy'
+podkop.youtube.proxy_config_type='url'
+podkop.youtube.proxy_string='vless://single@7.7.7.7:443#%E2%9A%A1%20single'
 podkop.youtube.local_subnet_lists='/etc/lst/yt_ip.lst'
 `
 
@@ -68,13 +73,26 @@ func TestSections(t *testing.T) {
 
 	want := []Section{
 		{
-			Name:           "main",
-			ConnectionType: "proxy",
-			DomainLists:    []string{"/etc/lst/domain_list.lst", "/etc/lst/extra.lst"},
-			SubnetLists:    []string{"/etc/lst/ip_list.lst"},
+			Name:            "main",
+			ConnectionType:  "proxy",
+			DomainLists:     []string{"/etc/lst/domain_list.lst", "/etc/lst/extra.lst"},
+			SubnetLists:     []string{"/etc/lst/ip_list.lst"},
+			ProxyConfigType: "urltest",
+			// selector_proxy_links is in the config too, and must be
+			// ignored: only the option matching the type is in use.
+			ProxyLinks: []string{
+				"vless://a@1.2.3.4:8443#%E2%9A%A1%20one",
+				"vless://b@1.2.3.4:8443#%E2%9A%A1%20two",
+			},
 		},
 		{Name: "Exclude", ConnectionType: "exclusion"},
-		{Name: "youtube", ConnectionType: "proxy", SubnetLists: []string{"/etc/lst/yt_ip.lst"}},
+		{
+			Name:            "youtube",
+			ConnectionType:  "proxy",
+			SubnetLists:     []string{"/etc/lst/yt_ip.lst"},
+			ProxyConfigType: "url",
+			ProxyString:     "vless://single@7.7.7.7:443#%E2%9A%A1%20single",
+		},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("sections mismatch:\n got %+v\nwant %+v", got, want)

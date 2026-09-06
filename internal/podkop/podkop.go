@@ -23,6 +23,14 @@ type Section struct {
 	// several files at once.
 	DomainLists []string
 	SubnetLists []string
+	// ProxyConfigType is how the section gets its outbound: url, selector,
+	// urltest or outbound.
+	ProxyConfigType string
+	// ProxyLinks is the option matching ProxyConfigType — urltest_proxy_links
+	// or selector_proxy_links. Both are UCI lists.
+	ProxyLinks []string
+	// ProxyString is the single link a proxy_config_type=url section carries.
+	ProxyString string
 }
 
 // Lists returns the paths feeding the section for one kind of entry.
@@ -72,6 +80,9 @@ func Sections(ctx context.Context) ([]Section, error) {
 
 	var sections []Section
 	index := make(map[string]int)
+	// Both link options are collected as they come: proxy_config_type may be
+	// printed after them, and only it says which one is in use.
+	linksByOption := make(map[int]map[string][]string)
 
 	// uci prints values verbatim, and a value may span lines —
 	// user_domains_text holds a whole list, any line of which can look exactly
@@ -114,7 +125,20 @@ func Sections(ctx context.Context) ([]Section, error) {
 			sections[i].DomainLists = parseValues(m[3])
 		case OptionName(lists.TypeIP):
 			sections[i].SubnetLists = parseValues(m[3])
+		case "proxy_config_type":
+			sections[i].ProxyConfigType = firstValue(parseValues(m[3]))
+		case "proxy_string":
+			sections[i].ProxyString = firstValue(parseValues(m[3]))
+		case urltestLinksOption, selectorLinksOption:
+			if linksByOption[i] == nil {
+				linksByOption[i] = make(map[string][]string, 2)
+			}
+			linksByOption[i][m[2]] = parseValues(m[3])
 		}
+	}
+
+	for i := range sections {
+		sections[i].ProxyLinks = linksByOption[i][ProxyLinksOption(sections[i].ProxyConfigType)]
 	}
 	return sections, nil
 }
