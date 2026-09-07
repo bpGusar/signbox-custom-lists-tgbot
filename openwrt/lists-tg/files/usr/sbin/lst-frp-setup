@@ -1,0 +1,594 @@
+#!/bin/sh
+# Install and configure frpc (the frp client) on the router so it can be reached
+# from a VPS running frps, without a public IP or port forwarding.
+#
+# Everything is driven by the frp_* options in
+# /etc/config/lst-signbox-lists-tgbot. This script is invoked from the bot
+# package's postinst on every update, so it must be idempotent and it must never
+# leave the router worse off than it found it: there is no physical access to
+# this device. Every failure path keeps the currently running frpc (if any)
+# untouched and returns without touching anything outside /usr/bin/frpc and
+# /etc/frp. It never edits network, firewall or dropbear configuration.
+#
+# Usage:
+#   lst-frp-setup ensure   — make the running state match UCI (idempotent)
+#   lst-frp-setup status   — print state as JSON to stdout
+#   lst-frp-setup log      — print the last ensure run's log to stdout
+#   lst-frp-setup remove   — stop frpc and delete its binary and config
+
+set -u
+
+UCI_PACKAGE="lst-signbox-lists-tgbot"
+FRP_VERSION_DEFAULT="0.71.0"
+FRP_BIN="/usr/bin/frpc"
+FRP_BIN_DIR="/usr/bin"
+FRP_CONF_DIR="/etc/frp"
+FRP_CONF="${FRP_CONF_DIR}/frpc.toml"
+INIT_SCRIPT="/etc/init.d/frpc"
+STATE_FILE="/tmp/lst-frp-setup.state"
+LOG_FILE="/tmp/lst-frp-setup.log"
+LOCK_DIR="/tmp/lst-frp-setup.lock"
+WORK_DIR="/tmp/lst-frp-setup.work"
+RELEASE_BASE="https://github.com/fatedier/frp/releases/download"
+MIN_FREE_KB=25600
+MIN_TMP_FREE_KB=20480
+LOCK_STALE_SEC=1800
+RETRIES=3
+DOWNLOAD_TIMEOUT=60
+
+log() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
+
+die() {
+	log "ERROR: $*"
+	return 1
+}
+
+need_root() {
+	[ "$(id -u)" -eq 0 ] || { echo "run as root" >&2; exit 1; }
+}
+
+# OpenWrt's default /usr/bin/wget is uclient-fetch, which on some builds
+# segfaults while following GitHub's redirect to objects.githubusercontent.com
+# and dies with "Failed to send request: Operation not permitted" on others.
+# curl copes with both, so try it first and fall back to whatever else is there.
+download_backends() {
+	local wget_bin uclient_bin
+
+	if command -v curl >/dev/null 2>&1; then
+		printf 'curl\n'
+	fi
+
+	wget_bin="$(command -v wget 2>/dev/null || true)"
+	uclient_bin="$(command -v uclient-fetch 2>/dev/null || true)"
+
+	if [ -n "$wget_bin" ]; then
+		printf 'wget\n'
+	fi
+	if [ -n "$uclient_bin" ] && \
+		[ "$(readlink -f "$wget_bin" 2>/dev/null || true)" != "$(readlink -f "$uclient_bin" 2>/dev/null || true)" ]; then
+		printf 'uclient-fetch\n'
+	fi
+	return 0
+}
+
+run_download_backend() {
+	local backend="$1"
+	local url="$2"
+	local dest="$3"
+
+	case "$backend" in
+		curl)          curl -fsS -L --connect-timeout 15 --max-time "$DOWNLOAD_TIMEOUT" -o "$dest" "$url" ;;
+		wget)          wget -q -T "$DOWNLOAD_TIMEOUT" -O "$dest" "$url" ;;
+		uclient-fetch) uclient-fetch -q -T "$DOWNLOAD_TIMEOUT" -O "$dest" "$url" ;;
+		*)             return 127 ;;
+	esac
+}
+
+download_file() {
+	local url="$1"
+	local dest="$2"
+	local attempt=0
+	local backend rc
+
+	while [ "$attempt" -lt "$RETRIES" ]; do
+		attempt=$((attempt + 1))
+		for backend in $(download_backends); do
+			log "download $(basename "$dest") via ${backend} (attempt ${attempt}/${RETRIES})"
+			rc=0
+			run_download_backend "$backend" "$url" "$dest" || rc=$?
+			if [ "$rc" -eq 0 ] && [ -s "$dest" ]; then
+				return 0
+			fi
+			log "${backend} failed (exit ${rc})"
+			rm -f "$dest"
+		done
+		if [ "$attempt" -lt "$RETRIES" ]; then
+			sleep 2
+		fi
+	done
+	return 1
+}
+
+uci_get() {
+	uci -q get "${UCI_PACKAGE}.main.$1" 2>/dev/null || true
+}
+
+is_uint() {
+	case "${1:-}" in
+		''|*[!0-9]*) return 1 ;;
+		*)           return 0 ;;
+	esac
+}
+
+is_port() {
+	is_uint "${1:-}" || return 1
+	[ "$1" -ge 1 ] && [ "$1" -le 65535 ]
+}
+
+# free_kb prints the KB available on the filesystem backing $1. Works whether or
+# not df wraps a long device name onto its own line.
+free_kb() {
+	df -k "$1" 2>/dev/null | awk 'END { if (NF >= 4) print $(NF-2); else print 0 }'
+}
+
+router_arch() {
+	local DISTRIB_ARCH=""
+	# shellcheck disable=SC1091
+	[ -f /etc/openwrt_release ] && . /etc/openwrt_release
+	printf '%s' "${DISTRIB_ARCH:-}"
+}
+
+# detect_asset maps the OpenWrt arch to an frp release asset suffix. An arch we
+# do not know about is not a fatal error — ensure just records it and stops.
+detect_asset() {
+	case "$(router_arch)" in
+		aarch64_*)                echo "linux_arm64" ;;
+		arm_cortex-a7_neon-vfpv4) echo "linux_arm_hf" ;;
+		arm_*neon*|arm_*vfp*)     echo "linux_arm_hf" ;;
+		arm_*)                    echo "linux_arm" ;;
+		mipsel_*)                 echo "linux_mipsle" ;;
+		mips_*)                   echo "linux_mips" ;;
+		x86_64)                   echo "linux_amd64" ;;
+		i386_*|x86)               echo "linux_386" ;;
+		*)                        return 1 ;;
+	esac
+}
+
+installed_frpc_version() {
+	[ -x "$FRP_BIN" ] || return 1
+	"$FRP_BIN" -v 2>/dev/null | tr -d ' \t\r\n'
+}
+
+frpc_running() {
+	if [ -x "$INIT_SCRIPT" ] && "$INIT_SCRIPT" running >/dev/null 2>&1; then
+		return 0
+	fi
+	pgrep -f "$FRP_BIN" >/dev/null 2>&1
+}
+
+write_state() {
+	local tmp="${STATE_FILE}.new.$$"
+	if printf 'state=%s\ndetail=%s\nts=%s\n' "$1" "${2:-}" "$(date '+%s')" > "$tmp" 2>/dev/null; then
+		mv "$tmp" "$STATE_FILE" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+	else
+		rm -f "$tmp" 2>/dev/null
+	fi
+}
+
+read_state() {
+	[ -f "$STATE_FILE" ] || return 1
+	sed -n 's/^state=//p' "$STATE_FILE" 2>/dev/null | head -n1
+}
+
+json_str() {
+	printf '%s' "${1:-}" | sed 's/\\/\\\\/g; s/"/\\"/g; s/	/ /g'
+}
+
+json_bool() {
+	[ "${1:-}" = "1" ] && printf 'true' || printf 'false'
+}
+
+acquire_lock() {
+	local started now
+	if mkdir "$LOCK_DIR" 2>/dev/null; then
+		date '+%s' > "$LOCK_DIR/ts" 2>/dev/null || true
+		return 0
+	fi
+	started="$(cat "$LOCK_DIR/ts" 2>/dev/null || echo '')"
+	[ -n "$started" ] || return 1
+	now="$(date '+%s')"
+	if [ "$((now - started))" -gt "$LOCK_STALE_SEC" ]; then
+		log "stealing stale lock (age $((now - started))s)"
+		rm -rf "$LOCK_DIR" 2>/dev/null || true
+		if mkdir "$LOCK_DIR" 2>/dev/null; then
+			date '+%s' > "$LOCK_DIR/ts" 2>/dev/null || true
+			return 0
+		fi
+	fi
+	return 1
+}
+
+release_lock() {
+	rm -rf "$LOCK_DIR" 2>/dev/null || true
+}
+
+# install_file_atomic copies src to a temp file next to dst and renames it into
+# place, so a reader never sees a half-written file and a failure never destroys
+# what is already there.
+install_file_atomic() {
+	local src="$1" dst="$2" mode="$3" tmp
+	tmp="${dst}.new.$$"
+	cp "$src" "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
+	chmod "$mode" "$tmp" 2>/dev/null || true
+	mv "$tmp" "$dst" 2>/dev/null || { rm -f "$tmp"; return 1; }
+	return 0
+}
+
+verify_sha256() {
+	local file="$1" name="$2" sums="$3" expected actual
+	command -v sha256sum >/dev/null 2>&1 || { log "sha256sum unavailable — skipping checksum"; return 0; }
+	expected="$(grep -F "$name" "$sums" 2>/dev/null | awk '{print $1; exit}')"
+	[ -n "$expected" ] || { log "no checksum entry for ${name} — skipping"; return 0; }
+	actual="$(sha256sum "$file" 2>/dev/null | awk '{print $1; exit}')"
+	if [ "$expected" = "$actual" ]; then
+		log "checksum verified"
+		return 0
+	fi
+	log "checksum mismatch: expected ${expected}, got ${actual}"
+	return 1
+}
+
+install_frpc() {
+	local asset="$1" version="$2"
+	local tarball="$WORK_DIR/frp.tar.gz"
+	local sums="$WORK_DIR/sha256sums.txt"
+	local asset_name="frp_${version}_${asset}.tar.gz"
+	local url="${RELEASE_BASE}/v${version}/${asset_name}"
+	local sums_url="${RELEASE_BASE}/v${version}/frp_sha256_checksums.txt"
+	local inner="frp_${version}_${asset}"
+	local got
+
+	log "downloading ${asset_name}"
+	download_file "$url" "$tarball" || { die "download failed: ${url}"; return 1; }
+
+	if download_file "$sums_url" "$sums"; then
+		verify_sha256 "$tarball" "$asset_name" "$sums" || return 1
+	else
+		log "checksums file unavailable — relying on the binary's own version check"
+	fi
+
+	if ! tar -xzOf "$tarball" "${inner}/frpc" > "$WORK_DIR/frpc" 2>/dev/null || [ ! -s "$WORK_DIR/frpc" ]; then
+		rm -rf "$WORK_DIR/x"
+		mkdir -p "$WORK_DIR/x"
+		tar -xzf "$tarball" -C "$WORK_DIR/x" >/dev/null 2>&1 || { die "cannot extract archive"; return 1; }
+		[ -f "$WORK_DIR/x/${inner}/frpc" ] || { die "frpc missing from archive"; return 1; }
+		cp "$WORK_DIR/x/${inner}/frpc" "$WORK_DIR/frpc" || { die "cannot copy frpc from archive"; return 1; }
+		rm -rf "$WORK_DIR/x"
+	fi
+	# free the archive before touching flash: on a small tmpfs every MB counts
+	rm -f "$tarball" "$sums"
+	chmod +x "$WORK_DIR/frpc" 2>/dev/null || true
+
+	got="$("$WORK_DIR/frpc" -v 2>/dev/null | tr -d ' \t\r\n')"
+	if [ "$got" != "$version" ]; then
+		die "downloaded frpc reports '${got}', expected '${version}'"
+		return 1
+	fi
+
+	install_file_atomic "$WORK_DIR/frpc" "$FRP_BIN" 755 || { die "cannot install ${FRP_BIN}"; return 1; }
+	log "frpc ${version} installed"
+	return 0
+}
+
+# gen_config renders /etc/frp/frpc.toml from UCI. The bot validates every value
+# before it is stored, but this is the last line of defence against a value that
+# would break out of a TOML string or inject an extra proxy, so each field is
+# checked again here against a strict allowlist.
+gen_config() {
+	local dest="$1"
+	local addr port token ssh_port luci_domain luci_user luci_pass luci_ready
+
+	addr="$(uci_get frp_server_addr)"
+	port="$(uci_get frp_server_port)"; [ -n "$port" ] || port="12243"
+	token="$(uci_get frp_token)"
+	ssh_port="$(uci_get frp_ssh_remote_port)"; [ -n "$ssh_port" ] || ssh_port="4640"
+	luci_domain="$(uci_get frp_luci_domain)"
+	luci_user="$(uci_get frp_luci_user)"
+	luci_pass="$(uci_get frp_luci_password)"
+
+	printf '%s' "$addr" | grep -qE '^[A-Za-z0-9._-]+$' || { die "bad server address"; return 1; }
+	is_port "$port" || { die "bad server port"; return 1; }
+	printf '%s' "$token" | grep -qE '^[A-Za-z0-9+/=_.-]{8,512}$' || { die "bad token"; return 1; }
+	is_port "$ssh_port" || { die "bad ssh remote port"; return 1; }
+
+	luci_ready=""
+	if [ -n "$luci_domain" ] || [ -n "$luci_user" ] || [ -n "$luci_pass" ]; then
+		if [ -z "$luci_domain" ] || [ -z "$luci_user" ] || [ -z "$luci_pass" ]; then
+			log "LuCI proxy needs domain, user and password together — leaving it out"
+		elif ! printf '%s' "$luci_domain" | grep -qE '^[a-z0-9.-]+$'; then
+			die "bad LuCI domain"; return 1
+		elif ! printf '%s' "$luci_user" | grep -qE '^[A-Za-z0-9._-]{1,64}$'; then
+			die "bad LuCI user"; return 1
+		elif printf '%s' "$luci_pass" | grep -qE '["\\]'; then
+			die "bad LuCI password"; return 1
+		elif [ "$(printf '%s' "$luci_pass" | wc -l)" -ne 0 ]; then
+			die "bad LuCI password"; return 1
+		elif [ "${#luci_pass}" -lt 8 ] || [ "${#luci_pass}" -gt 128 ]; then
+			die "bad LuCI password length"; return 1
+		else
+			luci_ready=1
+		fi
+	fi
+
+	{
+		printf 'serverAddr = "%s"\n' "$addr"
+		printf 'serverPort = %s\n' "$port"
+		printf 'auth.token = "%s"\n' "$token"
+		printf 'transport.tls.enable = true\n'
+		printf '\n[[proxies]]\n'
+		printf 'name = "router-ssh"\n'
+		printf 'type = "tcp"\n'
+		printf 'localIP = "127.0.0.1"\n'
+		printf 'localPort = 22\n'
+		printf 'remotePort = %s\n' "$ssh_port"
+		if [ -n "$luci_ready" ]; then
+			printf '\n[[proxies]]\n'
+			printf 'name = "router-luci"\n'
+			printf 'type = "http"\n'
+			printf 'localIP = "127.0.0.1"\n'
+			printf 'localPort = 80\n'
+			printf 'customDomains = ["%s"]\n' "$luci_domain"
+			printf 'httpUser = "%s"\n' "$luci_user"
+			printf 'httpPassword = "%s"\n' "$luci_pass"
+		fi
+	} > "$dest" 2>/dev/null || { die "cannot write config to ${dest}"; return 1; }
+	return 0
+}
+
+# ensure_init_script prefers the copy shipped with the package; it only writes
+# one itself if that is somehow missing, so the router is never left with a
+# binary and config but no way to run them.
+ensure_init_script() {
+	if [ -f "$INIT_SCRIPT" ]; then
+		[ -x "$INIT_SCRIPT" ] || chmod +x "$INIT_SCRIPT" 2>/dev/null || true
+		return 0
+	fi
+	cat > "$INIT_SCRIPT" <<'EOF'
+#!/bin/sh /etc/rc.common
+
+USE_PROCD=1
+START=99
+STOP=10
+
+PROG=/usr/bin/frpc
+CONF=/etc/frp/frpc.toml
+
+start_service() {
+	[ -x "$PROG" ] || return 0
+	[ -f "$CONF" ] || return 0
+	procd_open_instance frpc
+	procd_set_param command "$PROG" -c "$CONF"
+	procd_set_param respawn
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_set_param file "$CONF"
+	procd_close_instance
+}
+
+reload_service() {
+	restart
+}
+EOF
+	chmod +x "$INIT_SCRIPT" 2>/dev/null || true
+	return 0
+}
+
+ensure_main() {
+	local enabled server_addr token asset version need_install overlay_free tmp_free
+
+	rm -rf "$WORK_DIR"
+	mkdir -p "$WORK_DIR" || { die "cannot create work dir"; return 1; }
+
+	enabled="$(uci_get frp_enabled)"
+	if [ "$enabled" != "1" ]; then
+		log "frp_enabled is not 1 — nothing to do"
+		write_state "disabled"
+		return 0
+	fi
+
+	server_addr="$(uci_get frp_server_addr)"
+	token="$(uci_get frp_token)"
+	if [ -z "$server_addr" ] || [ -z "$token" ]; then
+		log "server address or token not configured"
+		write_state "not_configured"
+		return 0
+	fi
+
+	if ! asset="$(detect_asset)"; then
+		log "unsupported architecture: $(router_arch)"
+		write_state "unsupported" "arch $(router_arch)"
+		return 1
+	fi
+
+	version="$(uci_get frp_version)"
+	[ -n "$version" ] || version="$FRP_VERSION_DEFAULT"
+
+	# Build the target config before downloading anything: if it is not valid
+	# there is no point fetching a binary, and the running service is untouched.
+	if ! gen_config "$WORK_DIR/frpc.toml"; then
+		write_state "error" "invalid configuration values"
+		return 1
+	fi
+
+	need_install=1
+	if [ "$(installed_frpc_version 2>/dev/null || true)" = "$version" ]; then
+		need_install=0
+		log "frpc ${version} already installed"
+	fi
+
+	if [ "$need_install" = "1" ]; then
+		overlay_free="$(free_kb "$FRP_BIN_DIR")"
+		is_uint "$overlay_free" || overlay_free=0
+		if [ "$overlay_free" -lt "$MIN_FREE_KB" ]; then
+			log "not enough free space for frpc: ${overlay_free}KB < ${MIN_FREE_KB}KB"
+			write_state "no_space" "${overlay_free}KB free on flash"
+			return 1
+		fi
+		tmp_free="$(free_kb "$WORK_DIR")"
+		is_uint "$tmp_free" || tmp_free=0
+		if [ "$tmp_free" -lt "$MIN_TMP_FREE_KB" ]; then
+			log "not enough free space in /tmp: ${tmp_free}KB"
+			write_state "no_space" "${tmp_free}KB free in /tmp"
+			return 1
+		fi
+		if ! install_frpc "$asset" "$version"; then
+			write_state "error" "download or install failed"
+			return 1
+		fi
+	fi
+
+	# Validate the config against the real binary before it goes live.
+	if ! "$FRP_BIN" verify -c "$WORK_DIR/frpc.toml"; then
+		log "frpc verify failed — keeping the current configuration"
+		write_state "error" "config verify failed"
+		return 1
+	fi
+
+	mkdir -p "$FRP_CONF_DIR" 2>/dev/null || true
+	chmod 700 "$FRP_CONF_DIR" 2>/dev/null || true
+	if ! install_file_atomic "$WORK_DIR/frpc.toml" "$FRP_CONF" 600; then
+		write_state "error" "cannot write ${FRP_CONF}"
+		return 1
+	fi
+
+	ensure_init_script
+
+	"$INIT_SCRIPT" enable 2>/dev/null || true
+	if "$INIT_SCRIPT" restart; then
+		log "frpc (re)started"
+	else
+		log "frpc restart returned non-zero — procd will keep retrying"
+	fi
+
+	write_state "ok"
+	log "ensure completed"
+	return 0
+}
+
+# cmd_ensure marks the state as running, then does the slow work (download,
+# verify, restart) in a detached subshell and returns at once, the way the
+# upgrade script's `start` does. Callers — postinst and the bot — poll `status`
+# to see how it went instead of waiting on this process.
+cmd_ensure() {
+	need_root
+	if ! acquire_lock; then
+		log "another lst-frp-setup run is in progress — skipping"
+		exit 0
+	fi
+
+	write_state "running"
+	: > "$LOG_FILE" 2>/dev/null || true
+
+	(
+		trap 'release_lock; rm -rf "$WORK_DIR" 2>/dev/null' EXIT
+		log "ensure started"
+		if ! ensure_main; then
+			rc=$?
+			# ensure_main records a terminal state on every path it controls;
+			# if it is still "running" the script fell over unexpectedly.
+			[ "$(read_state 2>/dev/null || true)" = "running" ] && \
+				write_state "error" "unexpected failure (rc=${rc})"
+		fi
+	) >> "$LOG_FILE" 2>&1 &
+
+	exit 0
+}
+
+cmd_status() {
+	local enabled server_addr server_port token ssh_port luci_domain luci_user luci_pass version
+	local configured asset arch installed overlay_free free_ok running state detail luci_ready
+
+	enabled="$(uci_get frp_enabled)"
+	server_addr="$(uci_get frp_server_addr)"
+	server_port="$(uci_get frp_server_port)"; [ -n "$server_port" ] || server_port="12243"
+	token="$(uci_get frp_token)"
+	ssh_port="$(uci_get frp_ssh_remote_port)"; [ -n "$ssh_port" ] || ssh_port="4640"
+	luci_domain="$(uci_get frp_luci_domain)"
+	luci_user="$(uci_get frp_luci_user)"
+	luci_pass="$(uci_get frp_luci_password)"
+	version="$(uci_get frp_version)"; [ -n "$version" ] || version="$FRP_VERSION_DEFAULT"
+
+	configured=0
+	[ -n "$server_addr" ] && [ -n "$token" ] && configured=1
+
+	asset="$(detect_asset 2>/dev/null || true)"
+	arch="$(router_arch)"
+	installed="$(installed_frpc_version 2>/dev/null || true)"
+
+	overlay_free="$(free_kb "$FRP_BIN_DIR" 2>/dev/null || true)"
+	is_uint "$overlay_free" || overlay_free=0
+	free_ok=0
+	[ "$overlay_free" -ge "$MIN_FREE_KB" ] && free_ok=1
+
+	running=0
+	frpc_running && running=1
+
+	state=""
+	detail=""
+	if [ -f "$STATE_FILE" ]; then
+		state="$(sed -n 's/^state=//p' "$STATE_FILE" 2>/dev/null | head -n1)"
+		detail="$(sed -n 's/^detail=//p' "$STATE_FILE" 2>/dev/null | head -n1)"
+	fi
+
+	luci_ready=0
+	[ -n "$luci_domain" ] && [ -n "$luci_user" ] && [ -n "$luci_pass" ] && luci_ready=1
+
+	printf '{'
+	printf '"enabled":%s,' "$(json_bool "$enabled")"
+	printf '"configured":%s,' "$(json_bool "$configured")"
+	printf '"installed_version":"%s",' "$(json_str "$installed")"
+	printf '"target_version":"%s",' "$(json_str "$version")"
+	printf '"arch":"%s",' "$(json_str "$arch")"
+	printf '"asset":"%s",' "$(json_str "$asset")"
+	printf '"free_kb":%s,' "$overlay_free"
+	printf '"free_ok":%s,' "$(json_bool "$free_ok")"
+	printf '"running":%s,' "$(json_bool "$running")"
+	printf '"state":"%s",' "$(json_str "$state")"
+	printf '"detail":"%s",' "$(json_str "$detail")"
+	printf '"server_addr":"%s",' "$(json_str "$server_addr")"
+	printf '"server_port":"%s",' "$(json_str "$server_port")"
+	printf '"ssh_remote_port":"%s",' "$(json_str "$ssh_port")"
+	printf '"luci_domain":"%s",' "$(json_str "$luci_domain")"
+	printf '"luci_user":"%s",' "$(json_str "$luci_user")"
+	printf '"has_token":%s,' "$([ -n "$token" ] && echo true || echo false)"
+	printf '"has_luci_password":%s,' "$([ -n "$luci_pass" ] && echo true || echo false)"
+	printf '"luci_ready":%s' "$(json_bool "$luci_ready")"
+	printf '}\n'
+}
+
+cmd_log() {
+	if [ -f "$LOG_FILE" ]; then
+		cat "$LOG_FILE"
+	else
+		echo "no ensure run has been recorded yet"
+	fi
+}
+
+cmd_remove() {
+	need_root
+	if [ -x "$INIT_SCRIPT" ]; then
+		"$INIT_SCRIPT" stop >/dev/null 2>&1 || true
+		"$INIT_SCRIPT" disable >/dev/null 2>&1 || true
+	fi
+	rm -f "$FRP_CONF" "$FRP_BIN"
+	write_state "removed"
+	log "frpc stopped and removed"
+}
+
+case "${1:-}" in
+	ensure) cmd_ensure ;;
+	status) cmd_status ;;
+	log)    cmd_log ;;
+	remove) cmd_remove ;;
+	*)      echo "Usage: $0 ensure|status|log|remove" >&2; exit 1 ;;
+esac

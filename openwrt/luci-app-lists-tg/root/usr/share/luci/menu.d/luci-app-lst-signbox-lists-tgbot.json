@@ -10,5 +10,21 @@
       "acl": ["luci-app-lst-signbox-lists-tgbot"],
       "uci": { "lst-signbox-lists-tgbot": true }
     }
+  },
+  "admin/services/lst-signbox-lists-tgbot/general": {
+    "title": "General",
+    "order": 1,
+    "action": {
+      "type": "view",
+      "path": "lst-signbox-lists-tgbot/lst-signbox-lists-tgbot"
+    }
+  },
+  "admin/services/lst-signbox-lists-tgbot/frp": {
+    "title": "Remote access (frp)",
+    "order": 2,
+    "action": {
+      "type": "view",
+      "path": "lst-signbox-lists-tgbot/frp"
+    }
   }
 }

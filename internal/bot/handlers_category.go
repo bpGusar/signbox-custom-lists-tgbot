@@ -529,6 +529,13 @@ func (a *App) handleAwaitedText(ctx context.Context, b *tgbot.Bot, update *model
 		return
 	}
 
+	// An frp config value is not a category name and does not live in the
+	// pending operation store either; opID carries the field name.
+	if kind == awaitFrpField {
+		a.handleFrpFieldText(ctx, b, update, opID, text)
+		return
+	}
+
 	// The user may ignore the prompt and just send the next list instead of a
 	// name. Anything that parses cleanly as domains or IPs is treated as list
 	// input rather than silently becoming a category called "vk.com".

@@ -31,6 +31,8 @@ define Package/luci-app-lst-signbox-lists-tgbot/install
 	$(INSTALL_DIR) $(1)/www/luci-static/resources/view/lst-signbox-lists-tgbot
 	$(CP) ./htdocs/luci-static/resources/view/lst-signbox-lists-tgbot/lst-signbox-lists-tgbot.js \
 		$(1)/www/luci-static/resources/view/lst-signbox-lists-tgbot/
+	$(CP) ./htdocs/luci-static/resources/view/lst-signbox-lists-tgbot/frp.js \
+		$(1)/www/luci-static/resources/view/lst-signbox-lists-tgbot/
 	$(INSTALL_DIR) $(1)/usr/share/luci/menu.d
 	$(INSTALL_DATA) ./root/usr/share/luci/menu.d/luci-app-lst-signbox-lists-tgbot.json \
 		$(1)/usr/share/luci/menu.d/

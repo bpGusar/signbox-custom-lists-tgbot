@@ -259,6 +259,15 @@ backup_current_config() {
 	PREV_STATE_PATH="$(uci -q get lst-signbox-lists-tgbot.main.state_path || true)"
 	PREV_LOG_PATH="$(uci -q get lst-signbox-lists-tgbot.main.log_path || true)"
 	PREV_AUTO_RESTART="$(uci -q get lst-signbox-lists-tgbot.main.auto_restart || true)"
+	PREV_FRP_ENABLED="$(uci -q get lst-signbox-lists-tgbot.main.frp_enabled || true)"
+	PREV_FRP_VERSION="$(uci -q get lst-signbox-lists-tgbot.main.frp_version || true)"
+	PREV_FRP_SERVER_ADDR="$(uci -q get lst-signbox-lists-tgbot.main.frp_server_addr || true)"
+	PREV_FRP_SERVER_PORT="$(uci -q get lst-signbox-lists-tgbot.main.frp_server_port || true)"
+	PREV_FRP_TOKEN="$(uci -q get lst-signbox-lists-tgbot.main.frp_token || true)"
+	PREV_FRP_SSH_REMOTE_PORT="$(uci -q get lst-signbox-lists-tgbot.main.frp_ssh_remote_port || true)"
+	PREV_FRP_LUCI_DOMAIN="$(uci -q get lst-signbox-lists-tgbot.main.frp_luci_domain || true)"
+	PREV_FRP_LUCI_USER="$(uci -q get lst-signbox-lists-tgbot.main.frp_luci_user || true)"
+	PREV_FRP_LUCI_PASSWORD="$(uci -q get lst-signbox-lists-tgbot.main.frp_luci_password || true)"
 }
 
 restore_config() {
@@ -298,6 +307,42 @@ restore_config() {
 	fi
 	if [ -n "$PREV_AUTO_RESTART" ]; then
 		uci set "lst-signbox-lists-tgbot.main.auto_restart=${PREV_AUTO_RESTART}"
+		changed=1
+	fi
+	if [ -n "$PREV_FRP_ENABLED" ]; then
+		uci set "lst-signbox-lists-tgbot.main.frp_enabled=${PREV_FRP_ENABLED}"
+		changed=1
+	fi
+	if [ -n "$PREV_FRP_VERSION" ]; then
+		uci set "lst-signbox-lists-tgbot.main.frp_version=${PREV_FRP_VERSION}"
+		changed=1
+	fi
+	if [ -n "$PREV_FRP_SERVER_ADDR" ]; then
+		uci set "lst-signbox-lists-tgbot.main.frp_server_addr=${PREV_FRP_SERVER_ADDR}"
+		changed=1
+	fi
+	if [ -n "$PREV_FRP_SERVER_PORT" ]; then
+		uci set "lst-signbox-lists-tgbot.main.frp_server_port=${PREV_FRP_SERVER_PORT}"
+		changed=1
+	fi
+	if [ -n "$PREV_FRP_TOKEN" ]; then
+		uci set "lst-signbox-lists-tgbot.main.frp_token=${PREV_FRP_TOKEN}"
+		changed=1
+	fi
+	if [ -n "$PREV_FRP_SSH_REMOTE_PORT" ]; then
+		uci set "lst-signbox-lists-tgbot.main.frp_ssh_remote_port=${PREV_FRP_SSH_REMOTE_PORT}"
+		changed=1
+	fi
+	if [ -n "$PREV_FRP_LUCI_DOMAIN" ]; then
+		uci set "lst-signbox-lists-tgbot.main.frp_luci_domain=${PREV_FRP_LUCI_DOMAIN}"
+		changed=1
+	fi
+	if [ -n "$PREV_FRP_LUCI_USER" ]; then
+		uci set "lst-signbox-lists-tgbot.main.frp_luci_user=${PREV_FRP_LUCI_USER}"
+		changed=1
+	fi
+	if [ -n "$PREV_FRP_LUCI_PASSWORD" ]; then
+		uci set "lst-signbox-lists-tgbot.main.frp_luci_password=${PREV_FRP_LUCI_PASSWORD}"
 		changed=1
 	fi
 
