@@ -38,6 +38,7 @@ const (
 	cbProxyReplaceGo   = "rep"
 	cbProxyLatency     = "lat"
 	cbProxyReport      = "back"
+	cbProxyBolt        = "bolt"
 	cbProxySecPrefix   = "sec_"
 	cbProxyConvPrefix  = "conv_"
 	cbProxyConvGo      = "conv!_"
@@ -53,8 +54,9 @@ const (
 	progressInterval = 3 * time.Second
 )
 
-// showProxyUploadHint says what a subscription file must look like and arms
-// the chat for it: a document is accepted only once this has been read.
+// showProxyUploadHint says what a subscription list must look like and arms
+// the chat for it: a document — or a pasted list — is accepted only once this
+// has been read.
 func (a *App) showProxyUploadHint(ctx context.Context, b *tgbot.Bot, update *models.Update, chatID int64) {
 	a.sess.ArmProxyFile(chatID)
 	a.editCallbackMessageMarkup(ctx, b, update, proxyUploadHintText(), a.backToMainMenuInlineKeyboard())
@@ -63,22 +65,23 @@ func (a *App) showProxyUploadHint(ctx context.Context, b *tgbot.Bot, update *mod
 func proxyUploadHintText() string {
 	limits := proxylink.DefaultLimits()
 	return btnProxyLinks + "\n\n" +
-		"📎 Пришлите файл со ссылками на конфиги — обычным документом в этот чат.\n\n" +
-		"Каким должен быть файл:\n" +
-		"• текстовый (.txt), одна ссылка в строке\n" +
+		"📎 Пришлите файл со ссылками на конфиги — обычным документом в этот чат — " +
+		"или вставьте список сообщением, по одной ссылке в строке.\n\n" +
+		"Каким должен быть список:\n" +
+		"• одна ссылка в строке, файл — текстовый (.txt)\n" +
 		"• схемы: vless, ss, trojan, socks4, socks4a, socks5, hysteria2 (hy2)\n" +
-		"• берутся только ссылки с ⚡ в названии\n" +
+		"• по умолчанию берутся только ссылки с ⚡ в названии — фильтр можно снять кнопкой на следующем шаге\n" +
 		"• строки с LTE в названии и дубли отбрасываются\n" +
 		fmt.Sprintf("• не больше %d КБ, %d строк и %d ссылок\n\n", limits.MaxBytes/1024, limits.MaxLines, limits.MaxLinks) +
 		"Что будет дальше:\n" +
-		"1. бот покажет, что нашёл в файле\n" +
+		"1. бот покажет, что нашёл\n" +
 		"2. спросит порог задержки\n" +
 		"3. проверит ссылки и покажет отчёт\n" +
 		"4. предложит записать прошедшие в секцию podkop\n\n" +
-		"Жду файл."
+		"Жду файл или список."
 }
 
-// proxyUploadRequiredKeyboard points at the screen a file has to come after.
+// proxyUploadRequiredKeyboard points at the screen a list has to come after.
 func (a *App) proxyUploadRequiredKeyboard() *models.InlineKeyboardMarkup {
 	return &models.InlineKeyboardMarkup{
 		InlineKeyboard: [][]models.InlineKeyboardButton{
@@ -87,6 +90,11 @@ func (a *App) proxyUploadRequiredKeyboard() *models.InlineKeyboardMarkup {
 		},
 	}
 }
+
+// retryHint is what a rejected list ends with: a failed import leaves the chat
+// armed, so the next attempt can be sent straight away, without walking back
+// through the menu.
+const retryHint = "\n\nМожно прислать другой файл или вставить список сообщением."
 
 // handleDocument takes a subscription file sent into the chat. It is the only
 // thing the bot does with a document, so there is no file type to pick.
@@ -99,17 +107,13 @@ func (a *App) handleDocument(ctx context.Context, b *tgbot.Bot, update *models.U
 		a.logf(chatID, "proxy_import not_armed name=%q", doc.FileName)
 		a.sendPlain(ctx, b, chatID,
 			"📎 Бот не ждёт файл.\n\nЧтобы загрузить список прокси-ссылок, откройте «"+
-				btnProxyLinks+"» — там сказано, каким должен быть файл, и после этого бот его примет.",
+				btnProxyLinks+"» — там сказано, каким должен быть список, и после этого бот его примет.",
 			a.proxyUploadRequiredKeyboard())
 		return
 	}
 
 	limits := proxylink.DefaultLimits()
 	a.logf(chatID, "proxy_import document name=%q size=%d", doc.FileName, doc.FileSize)
-
-	// A file that did not work out leaves the chat armed: the next one can be
-	// sent straight away, without walking back through the menu.
-	const retryHint = "\n\nМожно прислать другой файл."
 
 	if doc.FileSize > limits.MaxBytes {
 		a.sendPlain(ctx, b, chatID,
@@ -125,40 +129,155 @@ func (a *App) handleDocument(ctx context.Context, b *tgbot.Bot, update *models.U
 		return
 	}
 
-	links, stats, err := proxylink.ParseAll(bytes.NewReader(data), limits)
+	a.startProxyImport(ctx, b, chatID, doc.FileName, data)
+}
+
+// handleProxyText takes the same list as a message: the whole subscription
+// pasted into the chat, one link per line. It runs only while the upload
+// screen has the chat armed, so ordinary list input is untouched.
+func (a *App) handleProxyText(ctx context.Context, b *tgbot.Bot, update *models.Update) {
+	chatID := update.Message.Chat.ID
+	text := update.Message.Text
+	a.logf(chatID, "proxy_import text bytes=%d", len(text))
+	a.startProxyImport(ctx, b, chatID, "", []byte(text))
+}
+
+// startProxyImport reads a source both ways — ⚡ only and everything — and puts
+// the first screen of the flow on it.
+func (a *App) startProxyImport(ctx context.Context, b *tgbot.Bot, chatID int64, source string, data []byte) {
+	limits := proxylink.DefaultLimits()
+
+	boltSet, allSet, err := parseProxySets(data, limits)
 	if err != nil {
 		a.logf(chatID, "proxy_import parse_error err=%v", err)
-		a.sendPlain(ctx, b, chatID, "❌ Не удалось разобрать файл: "+err.Error()+retryHint, a.backToMainMenuInlineKeyboard())
+		a.sendPlain(ctx, b, chatID, "❌ Не удалось разобрать список: "+err.Error()+retryHint,
+			a.backToMainMenuInlineKeyboard())
 		return
 	}
-	a.logf(chatID, "proxy_import parsed lines=%d parsed=%d bolt=%d lte=%d collapsed=%d kept=%d targets=%d",
-		stats.Lines, stats.Parsed, stats.Bolt, stats.LTE, stats.Collapsed, stats.Kept, stats.Targets)
+	st := boltSet.Stats
+	a.logf(chatID, "proxy_import parsed lines=%d parsed=%d bolt=%d lte=%d collapsed=%d kept=%d targets=%d all_kept=%d",
+		st.Lines, st.Parsed, st.Bolt, st.LTE, st.Collapsed, st.Kept, st.Targets, allSet.Stats.Kept)
 
-	if len(links) == 0 {
-		a.sendPlain(ctx, b, chatID, importStatsText(doc.FileName, stats)+"\n\n"+noLinksHint(stats)+retryHint,
+	// Nothing at all to work with: not even the bypass would find a link, so
+	// there is no import worth keeping.
+	if len(allSet.Links) == 0 {
+		a.sendPlain(ctx, b, chatID, importStatsText(source, allSet.Stats)+"\n\n"+noLinksHint(allSet.Stats)+retryHint,
 			a.backToMainMenuInlineKeyboard())
 		return
 	}
 	a.sess.DisarmProxyFile(chatID)
 
 	imp := a.sess.CreateImport(ProxyImport{
-		ChatID:   chatID,
-		FileName: doc.FileName,
-		Links:    links,
-		Stats:    stats,
-		MaxPing:  defaultMaxPing,
+		ChatID:  chatID,
+		Source:  source,
+		BoltSet: boltSet,
+		AllSet:  allSet,
+		MaxPing: defaultMaxPing,
 	})
+	a.sendPlain(ctx, b, chatID, proxyIntroText(imp), proxyIntroKeyboard(imp))
+}
 
-	text := importStatsText(doc.FileName, stats) + "\n\n" +
-		"Ссылки медленнее порога отсеются. Порог по умолчанию — " + probe.FormatLatency(defaultMaxPing) + "."
-	a.sendPlain(ctx, b, chatID, text, &models.InlineKeyboardMarkup{
-		InlineKeyboard: [][]models.InlineKeyboardButton{
-			{{Text: "⚡ Проверить с порогом " + probe.FormatLatency(defaultMaxPing),
-				CallbackData: proxyCbPrefix + imp.ID + ":" + cbProxyDefaultPing}},
-			{{Text: "✏️ Ввести порог", CallbackData: proxyCbPrefix + imp.ID + ":" + cbProxyAskPing}},
-			{{Text: btnCancel, CallbackData: proxyCbPrefix + imp.ID + ":cancel"}},
-		},
+// parseProxySets reads the source twice, because the limits cut a selection
+// short: counting the links the ⚡ filter drops against the cap would leave the
+// filtered set shorter than it should be.
+func parseProxySets(data []byte, lim proxylink.Limits) (bolt, all linkSet, err error) {
+	bolt.Links, bolt.Stats, err = proxylink.ParseAll(bytes.NewReader(data), lim, proxylink.DefaultOptions())
+	if err != nil {
+		return linkSet{}, linkSet{}, err
+	}
+	all.Links, all.Stats, err = proxylink.ParseAll(bytes.NewReader(data), lim, proxylink.Options{})
+	if err != nil {
+		return linkSet{}, linkSet{}, err
+	}
+	return bolt, all, nil
+}
+
+// proxyIntroText is the screen the flow starts from: what the source held,
+// which selection is active, and what happens next.
+func proxyIntroText(imp *ProxyImport) string {
+	text := importStatsText(imp.Source, imp.Stats) + "\n\n" + proxyFilterLine(imp)
+	switch {
+	case len(imp.Links) > 0:
+		return text + "\n\nСсылки медленнее порога отсеются. Порог по умолчанию — " +
+			probe.FormatLatency(defaultMaxPing) + "."
+	case imp.AllowNoBolt:
+		return text + "\n\n" + noLinksHint(imp.Stats)
+	default:
+		return text + "\n\n❌ Ни одна ссылка не помечена ⚡.\n\n" +
+			"Можно проверить все ссылки без этого условия — кнопка ниже."
+	}
+}
+
+func proxyFilterLine(imp *ProxyImport) string {
+	if imp.AllowNoBolt {
+		return "🔓 Фильтр ⚡ снят — берутся все ссылки, даже без молнии в названии."
+	}
+	return "⚡ Фильтр включён — берутся только ссылки с ⚡ в названии."
+}
+
+func proxyIntroKeyboard(imp *ProxyImport) *models.InlineKeyboardMarkup {
+	var rows [][]models.InlineKeyboardButton
+	if len(imp.Links) > 0 {
+		rows = append(rows,
+			[]models.InlineKeyboardButton{{
+				Text:         "⚡ Проверить с порогом " + probe.FormatLatency(defaultMaxPing),
+				CallbackData: proxyCbPrefix + imp.ID + ":" + cbProxyDefaultPing,
+			}},
+			[]models.InlineKeyboardButton{{
+				Text: "✏️ Ввести порог", CallbackData: proxyCbPrefix + imp.ID + ":" + cbProxyAskPing,
+			}},
+		)
+	}
+	if btn, ok := proxyBoltToggleButton(imp); ok {
+		rows = append(rows, []models.InlineKeyboardButton{btn})
+	}
+	rows = append(rows, []models.InlineKeyboardButton{{
+		Text: btnCancel, CallbackData: proxyCbPrefix + imp.ID + ":cancel",
+	}})
+	return &models.InlineKeyboardMarkup{InlineKeyboard: rows}
+}
+
+// proxyBoltToggleButton offers the other selection, and only when it is a
+// different one: on a list where every link carries ⚡ there is nothing to
+// bypass.
+func proxyBoltToggleButton(imp *ProxyImport) (models.InlineKeyboardButton, bool) {
+	data := proxyCbPrefix + imp.ID + ":" + cbProxyBolt
+	if imp.AllowNoBolt {
+		return models.InlineKeyboardButton{
+			Text:         fmt.Sprintf("⚡ Вернуть фильтр ⚡ (%d)", imp.BoltSet.Stats.Kept),
+			CallbackData: data,
+		}, true
+	}
+	if imp.AllSet.Stats.Kept <= imp.BoltSet.Stats.Kept {
+		return models.InlineKeyboardButton{}, false
+	}
+	return models.InlineKeyboardButton{
+		Text:         fmt.Sprintf("🔓 Проверить все ссылки, без ⚡ (%d)", imp.AllSet.Stats.Kept),
+		CallbackData: data,
+	}, true
+}
+
+// toggleProxyBolt swaps the two readings of the source. Whatever was measured
+// goes with them: the sets are different links, and a report carried over from
+// the other one would be about links that are no longer in the run.
+func (a *App) toggleProxyBolt(ctx context.Context, b *tgbot.Bot, update *models.Update, imp *ProxyImport) {
+	if imp.Running {
+		a.answerCallback(ctx, b, update)
+		return
+	}
+	updated, ok := a.sess.UpdateImport(imp.ID, func(p *ProxyImport) {
+		p.setSelection(!p.AllowNoBolt)
+		p.Results = make(map[string]linkResult)
+		p.Tunnel, p.TunnelNote, p.Section = false, "", ""
 	})
+	if !ok {
+		a.answerAndEditMarkup(ctx, b, update, "⏳ Импорт устарел. Пришлите список снова.",
+			a.backToMainMenuInlineKeyboard())
+		return
+	}
+	a.logf(imp.ChatID, "proxy_bolt_filter id=%s allow_no_bolt=%t kept=%d",
+		imp.ID, updated.AllowNoBolt, len(updated.Links))
+	a.answerAndEditMarkup(ctx, b, update, proxyIntroText(updated), proxyIntroKeyboard(updated))
 }
 
 // downloadDocument fetches the file Telegram is holding. The download link
@@ -188,33 +307,30 @@ func (a *App) downloadDocument(ctx context.Context, b *tgbot.Bot, doc *models.Do
 	return io.ReadAll(io.LimitReader(resp.Body, max))
 }
 
-func importStatsText(fileName string, st proxylink.Stats) string {
+func importStatsText(source string, st proxylink.Stats) string {
 	var sb strings.Builder
 	sb.WriteString("📥 Прокси-ссылки")
-	if fileName != "" {
-		sb.WriteString(" · " + fileName)
+	if source != "" {
+		sb.WriteString(" · " + source)
 	}
 	sb.WriteString(fmt.Sprintf("\n\nСтрок: %d\nСсылок: %d", st.Lines, st.Parsed))
 	if st.Skipped > 0 {
 		sb.WriteString(fmt.Sprintf(" (пропущено строк: %d)", st.Skipped))
 	}
-	sb.WriteString(fmt.Sprintf("\nС ⚡: %d\nОтсеяно по LTE: %d\nСхлопнуто дублей: %d", st.Bolt, st.LTE, st.Collapsed))
+	sb.WriteString(fmt.Sprintf("\nС ⚡: %d\nБез ⚡: %d\nОтсеяно по LTE: %d\nСхлопнуто дублей: %d",
+		st.Bolt, st.Parsed-st.Bolt, st.LTE, st.Collapsed))
 	sb.WriteString(fmt.Sprintf("\n\nК проверке: %d — %d уникальных адресов", st.Kept, st.Targets))
 	if st.Truncated {
-		sb.WriteString("\n\n⚠️ Файл прочитан не целиком — сработал лимит.")
+		sb.WriteString("\n\n⚠️ Список прочитан не целиком — сработал лимит.")
 	}
 	return sb.String()
 }
 
 func noLinksHint(st proxylink.Stats) string {
-	switch {
-	case st.Parsed == 0:
-		return "❌ В файле нет ссылок поддерживаемых схем (vless, ss, trojan, socks, hysteria2)."
-	case st.Bolt == 0:
-		return "❌ Ни одна ссылка не помечена ⚡ — брать нечего."
-	default:
-		return "❌ После отсева по LTE и дублям не осталось ни одной ссылки."
+	if st.Parsed == 0 {
+		return "❌ В списке нет ссылок поддерживаемых схем (vless, ss, trojan, socks, hysteria2)."
 	}
+	return "❌ После отсева по LTE и дублям не осталось ни одной ссылки."
 }
 
 // handleProxyCallback routes every button of the import flow.
@@ -231,7 +347,7 @@ func (a *App) handleProxyCallback(ctx context.Context, b *tgbot.Bot, update *mod
 		a.logf(chatID, "proxy_callback stale id=%s action=%s", impID, action)
 		_, _ = b.AnswerCallbackQuery(ctx, &tgbot.AnswerCallbackQueryParams{
 			CallbackQueryID: update.CallbackQuery.ID,
-			Text:            "⏳ Импорт устарел. Пришлите файл снова.",
+			Text:            "⏳ Импорт устарел. Пришлите список снова.",
 		})
 		return
 	}
@@ -256,6 +372,8 @@ func (a *App) handleProxyCallback(ctx context.Context, b *tgbot.Bot, update *mod
 			}
 		})
 		a.answerCallback(ctx, b, update)
+	case action == cbProxyBolt:
+		a.toggleProxyBolt(ctx, b, update, imp)
 	case action == cbProxyReport:
 		a.answerCallback(ctx, b, update)
 		a.showProxyReport(ctx, b, imp)
@@ -288,7 +406,7 @@ func (a *App) proxyCancelKeyboard(impID string) *models.InlineKeyboardMarkup {
 func (a *App) handleMaxPingText(ctx context.Context, b *tgbot.Bot, chatID int64, impID, text string) {
 	imp, ok := a.sess.GetImport(impID)
 	if !ok {
-		a.sendPlain(ctx, b, chatID, "⏳ Импорт устарел. Пришлите файл снова.", a.backToMainMenuInlineKeyboard())
+		a.sendPlain(ctx, b, chatID, "⏳ Импорт устарел. Пришлите список снова.", a.backToMainMenuInlineKeyboard())
 		return
 	}
 	maxPing, err := probe.ParseMaxPing(text)
@@ -727,7 +845,7 @@ func (a *App) proxyBackToReportKeyboard(impID string) *models.InlineKeyboardMark
 func (a *App) showProxyWritePreview(ctx context.Context, b *tgbot.Bot, update *models.Update, imp *ProxyImport) {
 	current, ok := a.sess.GetImport(imp.ID)
 	if !ok {
-		a.answerAndEditMarkup(ctx, b, update, "⏳ Импорт устарел. Пришлите файл снова.",
+		a.answerAndEditMarkup(ctx, b, update, "⏳ Импорт устарел. Пришлите список снова.",
 			a.backToMainMenuInlineKeyboard())
 		return
 	}

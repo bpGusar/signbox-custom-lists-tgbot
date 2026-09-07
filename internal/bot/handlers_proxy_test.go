@@ -172,7 +172,6 @@ func TestNoLinksHint(t *testing.T) {
 		want string
 	}{
 		{proxylink.Stats{Lines: 5}, "поддерживаемых схем"},
-		{proxylink.Stats{Lines: 5, Parsed: 5}, "не помечена ⚡"},
 		{proxylink.Stats{Lines: 5, Parsed: 5, Bolt: 3, LTE: 3}, "LTE и дублям"},
 	}
 	for _, c := range cases {
@@ -180,6 +179,105 @@ func TestNoLinksHint(t *testing.T) {
 			t.Errorf("noLinksHint(%+v) = %q, want it to mention %q", c.st, got, c.want)
 		}
 	}
+}
+
+// The ⚡ filter is a selection, not a verdict: the screen must offer the other
+// reading of the same source, and taking it must change what the run works on.
+func TestProxyBoltToggle(t *testing.T) {
+	s := newTestStore(time.Minute)
+	bolt := linkSet{
+		Links: parseLinks(t, "vless://a@1.1.1.1:443#⚡ один"),
+		Stats: proxylink.Stats{Parsed: 3, Bolt: 1, Kept: 1, Targets: 1},
+	}
+	all := linkSet{
+		Links: parseLinks(t,
+			"vless://a@1.1.1.1:443#⚡ один",
+			"vless://b@2.2.2.2:443#без молнии",
+			"vless://c@3.3.3.3:443#тоже без",
+		),
+		Stats: proxylink.Stats{Parsed: 3, Bolt: 1, Kept: 3, Targets: 3},
+	}
+	imp := s.CreateImport(ProxyImport{ChatID: 1, BoltSet: bolt, AllSet: all, MaxPing: defaultMaxPing})
+
+	if len(imp.Links) != 1 || imp.AllowNoBolt {
+		t.Fatalf("a fresh import must start on the ⚡ selection: %d links, allow_no_bolt=%t",
+			len(imp.Links), imp.AllowNoBolt)
+	}
+	btn, ok := proxyBoltToggleButton(imp)
+	if !ok || !strings.Contains(btn.Text, "3") {
+		t.Fatalf("the bypass must be offered with its count: %+v (shown=%t)", btn, ok)
+	}
+
+	updated, _ := s.UpdateImport(imp.ID, func(p *ProxyImport) { p.setSelection(true) })
+	if !updated.AllowNoBolt || len(updated.Links) != 3 {
+		t.Fatalf("the bypass must switch to every link: %d links, allow_no_bolt=%t",
+			len(updated.Links), updated.AllowNoBolt)
+	}
+	if !strings.Contains(proxyIntroText(updated), "Фильтр ⚡ снят") {
+		t.Fatalf("the screen must say the filter is off:\n%s", proxyIntroText(updated))
+	}
+
+	back, _ := s.UpdateImport(imp.ID, func(p *ProxyImport) { p.setSelection(false) })
+	if back.AllowNoBolt || len(back.Links) != 1 {
+		t.Fatalf("toggling back must restore the ⚡ selection: %d links", len(back.Links))
+	}
+}
+
+// Nothing to gain, nothing to offer: a list where every link is marked gets no
+// bypass button.
+func TestProxyBoltToggleHiddenWhenSetsMatch(t *testing.T) {
+	imp := &ProxyImport{
+		BoltSet: linkSet{Stats: proxylink.Stats{Kept: 4}},
+		AllSet:  linkSet{Stats: proxylink.Stats{Kept: 4}},
+	}
+	if _, ok := proxyBoltToggleButton(imp); ok {
+		t.Fatal("there is nothing to bypass")
+	}
+}
+
+// A list where nothing carries the mark used to be a dead end. It is now an
+// import that starts empty and offers the way out.
+func TestProxyImportWithoutAnyBolt(t *testing.T) {
+	source := []byte("vless://a@1.1.1.1:443#Амстердам\nvless://b@2.2.2.2:443#Стокгольм\n")
+
+	bolt, all, err := parseProxySets(source, proxylink.DefaultLimits())
+	if err != nil {
+		t.Fatalf("parseProxySets: %v", err)
+	}
+	if len(bolt.Links) != 0 {
+		t.Fatalf("the ⚡ selection must be empty, got %d links", len(bolt.Links))
+	}
+	if len(all.Links) != 2 {
+		t.Fatalf("every link must survive the bypass, got %d", len(all.Links))
+	}
+
+	imp := &ProxyImport{ID: "imp1", BoltSet: bolt, AllSet: all}
+	imp.setSelection(false)
+
+	text := proxyIntroText(imp)
+	if !strings.Contains(text, "не помечена ⚡") {
+		t.Fatalf("the screen must say why it is empty:\n%s", text)
+	}
+	rows := proxyIntroKeyboard(imp).InlineKeyboard
+	if len(rows) != 2 {
+		t.Fatalf("an empty selection offers only the bypass and cancel: %d rows", len(rows))
+	}
+	if !strings.HasSuffix(rows[0][0].CallbackData, ":"+cbProxyBolt) {
+		t.Fatalf("the first button must be the bypass: %q", rows[0][0].CallbackData)
+	}
+}
+
+func parseLinks(t *testing.T, raw ...string) []proxylink.Link {
+	t.Helper()
+	var out []proxylink.Link
+	for _, r := range raw {
+		l, err := proxylink.Parse(r)
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", r, err)
+		}
+		out = append(out, l)
+	}
+	return out
 }
 
 func TestPluralLinks(t *testing.T) {

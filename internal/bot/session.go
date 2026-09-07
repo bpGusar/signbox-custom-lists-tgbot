@@ -72,10 +72,11 @@ const (
 type chatState struct {
 	await     awaitKind
 	awaitOpID string
-	// proxyFile says the chat has been shown what a subscription file must
-	// look like, so a document may now be read as one. It lives beside await
-	// rather than inside it: a document and a text message are different
-	// channels, and typing something must not disarm the file upload.
+	// proxyFile says the chat has been shown what a subscription list must
+	// look like, so a document — or a pasted list of links — may now be read
+	// as one. It lives beside await rather than inside it: a document and a
+	// text message are different channels, and typing something must not
+	// disarm the upload.
 	proxyFile bool
 	updated   time.Time
 }
@@ -88,16 +89,33 @@ type linkResult struct {
 	Reason string
 }
 
-// ProxyImport is a subscription file being turned into podkop's link list. It
+// linkSet is one reading of a source: what a set of parse options kept, and
+// what the file looked like to them.
+type linkSet struct {
+	Links []proxylink.Link
+	Stats proxylink.Stats
+}
+
+// ProxyImport is a subscription list being turned into podkop's link list. It
 // does not fit PendingOp: it outlives several screens, carries a running
 // measurement, and is mutated from a background goroutine.
 type ProxyImport struct {
-	ID       string
-	ChatID   int64
-	FileName string
-	Links    []proxylink.Link
-	Stats    proxylink.Stats
-	MaxPing  time.Duration
+	ID     string
+	ChatID int64
+	// Source names where the links came from — a file name, or empty for a
+	// list pasted into the chat.
+	Source string
+	// BoltSet is the ⚡-only reading of the source, AllSet is every link it
+	// held. Both are kept so the screen can swap between them in one tap
+	// without asking for the file again.
+	BoltSet linkSet
+	AllSet  linkSet
+	// AllowNoBolt says the run works on AllSet: the ⚡ filter is bypassed.
+	AllowNoBolt bool
+	// Links and Stats are the selected set — whichever AllowNoBolt points at.
+	Links   []proxylink.Link
+	Stats   proxylink.Stats
+	MaxPing time.Duration
 	// Results is keyed by Link.DedupKey.
 	Results map[string]linkResult
 	// Method is what the surviving numbers were measured with.
@@ -113,6 +131,16 @@ type ProxyImport struct {
 	MessageID int
 	cancel    context.CancelFunc
 	Created   time.Time
+}
+
+// setSelection points Links and Stats at one of the two readings of the source.
+func (p *ProxyImport) setSelection(allowNoBolt bool) {
+	p.AllowNoBolt = allowNoBolt
+	set := p.BoltSet
+	if allowNoBolt {
+		set = p.AllSet
+	}
+	p.Links, p.Stats = set.Links, set.Stats
 }
 
 // Passed is the links that made it under the threshold, fastest first.
@@ -173,6 +201,8 @@ func (p *ProxyImport) clone() *ProxyImport {
 	out := *p
 	out.cancel = nil
 	out.Links = append([]proxylink.Link(nil), p.Links...)
+	out.BoltSet.Links = append([]proxylink.Link(nil), p.BoltSet.Links...)
+	out.AllSet.Links = append([]proxylink.Link(nil), p.AllSet.Links...)
 	out.Results = make(map[string]linkResult, len(p.Results))
 	for k, v := range p.Results {
 		out.Results[k] = v
@@ -188,6 +218,7 @@ func (s *SessionStore) CreateImport(imp ProxyImport) *ProxyImport {
 	stored := imp
 	stored.ID = randomID()
 	stored.Created = time.Now()
+	stored.setSelection(stored.AllowNoBolt)
 	if stored.Results == nil {
 		stored.Results = make(map[string]linkResult)
 	}

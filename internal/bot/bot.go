@@ -14,6 +14,7 @@ import (
 	"lst-signbox-lists-tgbot/internal/config"
 	"lst-signbox-lists-tgbot/internal/lists"
 	"lst-signbox-lists-tgbot/internal/podkop"
+	"lst-signbox-lists-tgbot/internal/proxylink"
 	"lst-signbox-lists-tgbot/internal/service"
 	"lst-signbox-lists-tgbot/internal/version"
 )
@@ -223,6 +224,14 @@ func (a *App) defaultHandler(ctx context.Context, b *tgbot.Bot, update *models.U
 
 	if !a.isReady(chatID) {
 		a.sendStartCheck(ctx, b, chatID)
+		return
+	}
+
+	// The upload screen also takes the subscription pasted straight into the
+	// chat, so while it is armed a message of links belongs to the import flow
+	// rather than to the domain/IP parser.
+	if a.sess.ProxyFileArmed(chatID) && proxylink.LooksLikeLinks(text) {
+		a.handleProxyText(ctx, b, update)
 		return
 	}
 
