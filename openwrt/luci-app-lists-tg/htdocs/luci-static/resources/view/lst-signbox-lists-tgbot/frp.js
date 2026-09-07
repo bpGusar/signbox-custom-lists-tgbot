@@ -237,7 +237,10 @@ return view.extend({
 		o = s.option(form.Value, 'frp_token', _('frp token'));
 		o.password = true;
 
-		o = s.option(form.Value, 'frp_ssh_remote_port', _('Public SSH port'), _('Must be inside the port range frps allows (4640–4643).'));
+		o = s.option(form.Value, 'frp_proxy_prefix', _('Router name (proxy prefix)'), _('Unique per router when several share one frps: proxies are named <prefix>-ssh and <prefix>-luci. Falls back to the hostname. a-z, 0-9, dash.'));
+		o.placeholder = 'home';
+
+		o = s.option(form.Value, 'frp_ssh_remote_port', _('Public SSH port'), _('Unique per router; must be inside the port range frps allows (4640–4643).'));
 		o.datatype = 'range(4640,4643)';
 		o.default = '4640';
 

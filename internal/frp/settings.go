@@ -22,6 +22,7 @@ const (
 	FieldServerAddr    Field = "server_addr"
 	FieldServerPort    Field = "server_port"
 	FieldToken         Field = "token"
+	FieldProxyPrefix   Field = "proxy_prefix"
 	FieldSSHRemotePort Field = "ssh_remote_port"
 	FieldLuciDomain    Field = "luci_domain"
 	FieldLuciUser      Field = "luci_user"
@@ -30,7 +31,7 @@ const (
 
 // EditableFields is the order they are shown in.
 var EditableFields = []Field{
-	FieldServerAddr, FieldServerPort, FieldToken, FieldSSHRemotePort,
+	FieldServerAddr, FieldServerPort, FieldToken, FieldProxyPrefix, FieldSSHRemotePort,
 	FieldLuciDomain, FieldLuciUser, FieldLuciPassword,
 }
 
@@ -45,6 +46,8 @@ func (f Field) Label() string {
 		return "порт frps"
 	case FieldToken:
 		return "токен frp"
+	case FieldProxyPrefix:
+		return "имя роутера (префикс прокси)"
 	case FieldSSHRemotePort:
 		return "публичный порт SSH"
 	case FieldLuciDomain:
@@ -72,6 +75,8 @@ func (f Field) Hint() string {
 		return "число 1–65535 (по умолчанию 12243)"
 	case FieldToken:
 		return "8–512 символов: буквы, цифры и + / = _ . -"
+	case FieldProxyPrefix:
+		return "1–32 символа: a-z, 0-9, дефис. Уникальное для каждого роутера на этом VPS (напр. home, dacha)"
 	case FieldSSHRemotePort:
 		return "число 4640–4643 (на VPS открыт этот диапазон)"
 	case FieldLuciDomain:
@@ -101,6 +106,8 @@ func (f Field) Validate(raw string) (string, error) {
 		return validatePort(v, 1, 65535)
 	case FieldToken:
 		return validateToken(v)
+	case FieldProxyPrefix:
+		return validateProxyPrefix(v)
 	case FieldSSHRemotePort:
 		return validatePort(v, 4640, 4643)
 	case FieldLuciDomain:
@@ -115,11 +122,26 @@ func (f Field) Validate(raw string) (string, error) {
 }
 
 var (
-	serverAddrRe = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
-	tokenRe      = regexp.MustCompile(`^[A-Za-z0-9+/=_.-]{8,512}$`)
-	domainRe     = regexp.MustCompile(`^[a-z0-9.-]+$`)
-	luciUserRe   = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
+	serverAddrRe  = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+	tokenRe       = regexp.MustCompile(`^[A-Za-z0-9+/=_.-]{8,512}$`)
+	domainRe      = regexp.MustCompile(`^[a-z0-9.-]+$`)
+	luciUserRe    = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
+	proxyPrefixRe = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
 )
+
+func validateProxyPrefix(v string) (string, error) {
+	v = strings.ToLower(v)
+	if !proxyPrefixRe.MatchString(v) {
+		return "", fmt.Errorf("1–32 символа: a-z, 0-9 и дефис")
+	}
+	if strings.HasPrefix(v, "-") || strings.HasSuffix(v, "-") || strings.Contains(v, "--") {
+		return "", fmt.Errorf("дефис не может быть первым/последним и не должен повторяться")
+	}
+	if v == "openwrt" || v == "lede" || v == "router" {
+		return "", fmt.Errorf("выберите уникальное имя, не %q", v)
+	}
+	return v, nil
+}
 
 func validateServerAddr(v string) (string, error) {
 	if v == "" {
@@ -206,6 +228,7 @@ type Settings struct {
 	ServerAddr    string
 	ServerPort    string
 	Token         string
+	ProxyPrefix   string
 	SSHRemotePort string
 	LuciDomain    string
 	LuciUser      string
@@ -218,6 +241,7 @@ func LoadSettings() Settings {
 		ServerAddr:    uciGet("frp_server_addr"),
 		ServerPort:    uciGet("frp_server_port"),
 		Token:         uciGet("frp_token"),
+		ProxyPrefix:   uciGet("frp_proxy_prefix"),
 		SSHRemotePort: uciGet("frp_ssh_remote_port"),
 		LuciDomain:    uciGet("frp_luci_domain"),
 		LuciUser:      uciGet("frp_luci_user"),

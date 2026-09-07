@@ -7,6 +7,7 @@ func TestFieldValidate_accepts(t *testing.T) {
 		FieldServerAddr:    {"203.0.113.10", "vps-ru.example.com", "a-b.c_d.example"},
 		FieldServerPort:    {"1", "12243", "65535"},
 		FieldToken:         {"abcd1234", "A1+/=_.-b2c3d4e5", "0123456789abcdef0123456789abcdef"},
+		FieldProxyPrefix:   {"home", "dacha", "office-2", "r1"},
 		FieldSSHRemotePort: {"4640", "4641", "4643"},
 		FieldLuciDomain:    {"vps-ru.example.com", "a.b.c.d"},
 		FieldLuciUser:      {"admin", "luci_user-1"},
@@ -33,6 +34,7 @@ func TestFieldValidate_rejectsInjection(t *testing.T) {
 		},
 		FieldServerPort:    {"", "0", "70000", "12243x", "-1", "80 90"},
 		FieldToken:         {"", "short", "tok en", "tok\"en", "tok\nen", "tok]en", "café-tok-123"},
+		FieldProxyPrefix:   {"", "openwrt", "lede", "router", "Home Router", "-home", "home-", "a--b", "prox_y", "город", "toolooooooooooooooooooooooooooooong-name"},
 		FieldSSHRemotePort: {"", "22", "4639", "4644", "8080"},
 		FieldLuciDomain: {
 			"", "ex\"ample.com", "no-dot", "a_b.example.com", "dom\nain.example.com",

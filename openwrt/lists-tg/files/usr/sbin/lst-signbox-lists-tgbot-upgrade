@@ -264,6 +264,7 @@ backup_current_config() {
 	PREV_FRP_SERVER_ADDR="$(uci -q get lst-signbox-lists-tgbot.main.frp_server_addr || true)"
 	PREV_FRP_SERVER_PORT="$(uci -q get lst-signbox-lists-tgbot.main.frp_server_port || true)"
 	PREV_FRP_TOKEN="$(uci -q get lst-signbox-lists-tgbot.main.frp_token || true)"
+	PREV_FRP_PROXY_PREFIX="$(uci -q get lst-signbox-lists-tgbot.main.frp_proxy_prefix || true)"
 	PREV_FRP_SSH_REMOTE_PORT="$(uci -q get lst-signbox-lists-tgbot.main.frp_ssh_remote_port || true)"
 	PREV_FRP_LUCI_DOMAIN="$(uci -q get lst-signbox-lists-tgbot.main.frp_luci_domain || true)"
 	PREV_FRP_LUCI_USER="$(uci -q get lst-signbox-lists-tgbot.main.frp_luci_user || true)"
@@ -327,6 +328,10 @@ restore_config() {
 	fi
 	if [ -n "$PREV_FRP_TOKEN" ]; then
 		uci set "lst-signbox-lists-tgbot.main.frp_token=${PREV_FRP_TOKEN}"
+		changed=1
+	fi
+	if [ -n "$PREV_FRP_PROXY_PREFIX" ]; then
+		uci set "lst-signbox-lists-tgbot.main.frp_proxy_prefix=${PREV_FRP_PROXY_PREFIX}"
 		changed=1
 	fi
 	if [ -n "$PREV_FRP_SSH_REMOTE_PORT" ]; then

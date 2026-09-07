@@ -284,9 +284,23 @@ install_frpc() {
 # before it is stored, but this is the last line of defence against a value that
 # would break out of a TOML string or inject an extra proxy, so each field is
 # checked again here against a strict allowlist.
+# proxy_prefix keeps proxy names unique per router when several clients share
+# one frps. It comes from UCI, or the hostname, or "router" as a last resort.
+proxy_prefix() {
+	local p
+	p="$(uci_get frp_proxy_prefix | tr 'A-Z' 'a-z')"
+	if [ -z "$p" ]; then
+		p="$(cat /proc/sys/kernel/hostname 2>/dev/null | tr 'A-Z' 'a-z' | tr -cd 'a-z0-9-')"
+	fi
+	case "$p" in
+		''|'openwrt'|'lede') p="router" ;;
+	esac
+	printf '%s' "$p"
+}
+
 gen_config() {
 	local dest="$1"
-	local addr port token ssh_port luci_domain luci_user luci_pass luci_ready
+	local addr port token ssh_port luci_domain luci_user luci_pass luci_ready prefix
 
 	addr="$(uci_get frp_server_addr)"
 	port="$(uci_get frp_server_port)"; [ -n "$port" ] || port="12243"
@@ -295,6 +309,7 @@ gen_config() {
 	luci_domain="$(uci_get frp_luci_domain)"
 	luci_user="$(uci_get frp_luci_user)"
 	luci_pass="$(uci_get frp_luci_password)"
+	prefix="$(proxy_prefix)"
 
 	# Charset checks use `case` globs, not `grep -E`: BusyBox grep has no
 	# interval expressions ({m,n}) and rejects them outright.
@@ -302,6 +317,12 @@ gen_config() {
 		''|*[!A-Za-z0-9._-]*) die "bad server address"; return 1 ;;
 	esac
 	is_port "$port" || { die "bad server port"; return 1; }
+	case "$prefix" in
+		''|-*|*-|*[!a-z0-9-]*) die "bad proxy prefix"; return 1 ;;
+	esac
+	if [ "${#prefix}" -gt 32 ]; then
+		die "proxy prefix too long"; return 1
+	fi
 	case "$token" in
 		*[!A-Za-z0-9+/=_.-]*) die "bad token"; return 1 ;;
 	esac
@@ -342,14 +363,14 @@ gen_config() {
 		printf 'auth.token = "%s"\n' "$token"
 		printf 'transport.tls.enable = true\n'
 		printf '\n[[proxies]]\n'
-		printf 'name = "router-ssh"\n'
+		printf 'name = "%s-ssh"\n' "$prefix"
 		printf 'type = "tcp"\n'
 		printf 'localIP = "127.0.0.1"\n'
 		printf 'localPort = 22\n'
 		printf 'remotePort = %s\n' "$ssh_port"
 		if [ -n "$luci_ready" ]; then
 			printf '\n[[proxies]]\n'
-			printf 'name = "router-luci"\n'
+			printf 'name = "%s-luci"\n' "$prefix"
 			printf 'type = "http"\n'
 			printf 'localIP = "127.0.0.1"\n'
 			printf 'localPort = 80\n'
@@ -522,7 +543,7 @@ cmd_ensure() {
 
 cmd_status() {
 	local enabled server_addr server_port token ssh_port luci_domain luci_user luci_pass version
-	local configured asset arch installed overlay_free free_ok running state detail luci_ready
+	local configured asset arch installed overlay_free free_ok running state detail luci_ready prefix
 
 	enabled="$(uci_get frp_enabled)"
 	server_addr="$(uci_get frp_server_addr)"
@@ -559,6 +580,8 @@ cmd_status() {
 	luci_ready=0
 	[ -n "$luci_domain" ] && [ -n "$luci_user" ] && [ -n "$luci_pass" ] && luci_ready=1
 
+	prefix="$(proxy_prefix)"
+
 	printf '{'
 	printf '"enabled":%s,' "$(json_bool "$enabled")"
 	printf '"configured":%s,' "$(json_bool "$configured")"
@@ -573,6 +596,7 @@ cmd_status() {
 	printf '"detail":"%s",' "$(json_str "$detail")"
 	printf '"server_addr":"%s",' "$(json_str "$server_addr")"
 	printf '"server_port":"%s",' "$(json_str "$server_port")"
+	printf '"proxy_prefix":"%s",' "$(json_str "$prefix")"
 	printf '"ssh_remote_port":"%s",' "$(json_str "$ssh_port")"
 	printf '"luci_domain":"%s",' "$(json_str "$luci_domain")"
 	printf '"luci_user":"%s",' "$(json_str "$luci_user")"

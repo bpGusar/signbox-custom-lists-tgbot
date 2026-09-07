@@ -37,6 +37,7 @@ type Info struct {
 	Detail           string `json:"detail"`
 	ServerAddr       string `json:"server_addr"`
 	ServerPort       string `json:"server_port"`
+	ProxyPrefix      string `json:"proxy_prefix"`
 	SSHRemotePort    string `json:"ssh_remote_port"`
 	LuciDomain       string `json:"luci_domain"`
 	LuciUser         string `json:"luci_user"`

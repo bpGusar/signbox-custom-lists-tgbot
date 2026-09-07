@@ -179,6 +179,7 @@ func (a *App) frpPanelText(ctx context.Context) (string, frp.Info) {
 	fmt.Fprintf(&sb, "• адрес VPS: %s\n", orDash(info.ServerAddr))
 	fmt.Fprintf(&sb, "• порт frps: %s\n", orDash(info.ServerPort))
 	fmt.Fprintf(&sb, "• токен: %s\n", setUnset(info.HasToken))
+	fmt.Fprintf(&sb, "• имя роутера: %s (прокси %s-ssh, %s-luci)\n", orDash(info.ProxyPrefix), orDash(info.ProxyPrefix), orDash(info.ProxyPrefix))
 	fmt.Fprintf(&sb, "• публичный порт SSH: %s\n", orDash(info.SSHRemotePort))
 	fmt.Fprintf(&sb, "• домен LuCI: %s\n", orDash(info.LuciDomain))
 	fmt.Fprintf(&sb, "• логин LuCI: %s\n", orDash(info.LuciUser))
@@ -197,7 +198,8 @@ func (a *App) frpPanelKeyboard(info frp.Info) *models.InlineKeyboardMarkup {
 	}
 	rows := [][]models.InlineKeyboardButton{
 		{edit(frp.FieldServerAddr), edit(frp.FieldServerPort)},
-		{edit(frp.FieldToken), edit(frp.FieldSSHRemotePort)},
+		{edit(frp.FieldToken), edit(frp.FieldProxyPrefix)},
+		{edit(frp.FieldSSHRemotePort)},
 		{edit(frp.FieldLuciDomain), edit(frp.FieldLuciUser)},
 		{edit(frp.FieldLuciPassword)},
 		{{Text: toggle, CallbackData: frpCbPrefix + "toggle"}},
