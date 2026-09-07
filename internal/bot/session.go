@@ -64,6 +64,8 @@ const (
 	awaitBindPath
 	// awaitMaxPing: the text is a latency threshold for a proxy import.
 	awaitMaxPing
+	// awaitFrpField: the text is a value for the frp_* option named in awaitOpID.
+	awaitFrpField
 )
 
 // chatState holds the one thing no message can carry on its own: what the bot

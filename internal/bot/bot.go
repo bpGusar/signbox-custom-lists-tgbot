@@ -95,6 +95,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	b.RegisterHandler(tgbot.HandlerTypeMessageText, "/gi_", tgbot.MatchTypePrefix, app.handleAddCategoryCommand)
 	b.RegisterHandler(tgbot.HandlerTypeCallbackQueryData, "s:", tgbot.MatchTypePrefix, app.handleCallback)
 	b.RegisterHandler(tgbot.HandlerTypeCallbackQueryData, proxyCbPrefix, tgbot.MatchTypePrefix, app.handleProxyCallback)
+	b.RegisterHandler(tgbot.HandlerTypeCallbackQueryData, frpCbPrefix, tgbot.MatchTypePrefix, app.handleFrpCallback)
 	b.RegisterHandler(tgbot.HandlerTypeCallbackQueryData, menuCbPrefix, tgbot.MatchTypePrefix, app.handleMenuCallback)
 
 	log.Println("lst-signbox-lists-tgbot started")

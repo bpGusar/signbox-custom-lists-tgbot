@@ -11,6 +11,7 @@ import (
 	tgbot "github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
 
+	"lst-signbox-lists-tgbot/internal/frp"
 	"lst-signbox-lists-tgbot/internal/lists"
 	"lst-signbox-lists-tgbot/internal/podkop"
 	"lst-signbox-lists-tgbot/internal/service"
@@ -202,7 +203,7 @@ func (a *App) mainMenuInlineKeyboard() *models.InlineKeyboardMarkup {
 }
 
 func (a *App) hasSettingsMenu() bool {
-	return a.cfg.RestartCmd != "" || service.UpgradeSupported()
+	return a.cfg.RestartCmd != "" || service.UpgradeSupported() || frp.Supported()
 }
 
 func (a *App) settingsMenuInlineKeyboard() *models.InlineKeyboardMarkup {
@@ -302,7 +303,7 @@ func (a *App) handleMenuCallback(ctx context.Context, b *tgbot.Bot, update *mode
 		a.editCallbackMessageMarkup(ctx, b, update, text, a.backToSettingsInlineKeyboard())
 	case "settings":
 		a.logf(chatID, "menu settings")
-		a.editCallbackMessageMarkup(ctx, b, update, a.settingsMenuText(), a.settingsMenuInlineKeyboard())
+		a.editCallbackMessageMarkup(ctx, b, update, a.settingsMenuText(), a.settingsKeyboardFor(update))
 	case "toggle_auto_restart":
 		if a.cfg.RestartCmd == "" {
 			break
@@ -312,11 +313,11 @@ func (a *App) handleMenuCallback(ctx context.Context, b *tgbot.Bot, update *mode
 			a.logf(chatID, "toggle_auto_restart error err=%v", err)
 			a.editCallbackMessageMarkup(ctx, b, update,
 				a.settingsMenuText()+"\n\n❌ Не удалось сохранить: "+err.Error(),
-				a.settingsMenuInlineKeyboard())
+				a.settingsKeyboardFor(update))
 			break
 		}
 		a.logf(chatID, "toggle_auto_restart enabled=%t", newVal)
-		a.editCallbackMessageMarkup(ctx, b, update, a.settingsMenuText(), a.settingsMenuInlineKeyboard())
+		a.editCallbackMessageMarkup(ctx, b, update, a.settingsMenuText(), a.settingsKeyboardFor(update))
 	case "main_menu":
 		a.logf(chatID, "menu main_inline")
 		a.editCallbackMessageMarkup(ctx, b, update, a.welcomeText(ctx), a.mainMenuInlineKeyboard())

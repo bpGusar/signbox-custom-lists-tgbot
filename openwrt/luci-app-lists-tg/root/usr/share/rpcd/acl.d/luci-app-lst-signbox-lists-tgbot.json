@@ -12,10 +12,16 @@
         "/usr/sbin/lst-signbox-lists-tgbot-upgrade": [
           "exec"
         ],
+        "/usr/sbin/lst-frp-setup": [
+          "exec"
+        ],
         "/bin/tail": [
           "exec"
         ],
         "/tmp/lst-signbox-lists-tgbot-upgrade.log": [
+          "read"
+        ],
+        "/tmp/lst-frp-setup.log": [
           "read"
         ],
         "/etc/lst-signbox-lists-tgbot/*": [
