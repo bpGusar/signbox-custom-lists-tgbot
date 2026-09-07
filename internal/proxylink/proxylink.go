@@ -1,4 +1,4 @@
-// Package proxylink parses a subscription file of proxy links and picks the
+// Package proxylink parses a subscription list of proxy links and picks the
 // ones worth measuring: marked with ⚡, not LTE, deduplicated.
 package proxylink
 
@@ -24,6 +24,8 @@ type Link struct {
 	Port   int
 	// Label is the fragment after "#", percent-decoded.
 	Label string
+	// Bolt says the label carries the ⚡ mark.
+	Bolt bool
 	// UDP marks the protocols that carry no TCP handshake to time, so a
 	// TCP probe would measure nothing.
 	UDP bool
@@ -38,9 +40,10 @@ type Stats struct {
 	Parsed int
 	// Skipped is the lines that were not: another scheme, or not a link.
 	Skipped int
-	// Bolt is the parsed links marked with ⚡.
+	// Bolt is the parsed links marked with ⚡, whether or not the selection
+	// asked for the mark.
 	Bolt int
-	// LTE is the ⚡ links dropped for being LTE.
+	// LTE is the links dropped for being LTE.
 	LTE int
 	// Collapsed is the duplicates dropped, links equal but for the label.
 	Collapsed int
@@ -63,6 +66,19 @@ type Limits struct {
 // DefaultLimits are the ones the bot uses.
 func DefaultLimits() Limits {
 	return Limits{MaxBytes: 1 << 20, MaxLines: 5000, MaxLinks: 300}
+}
+
+// Options is the selection ParseAll makes over the links it parsed.
+type Options struct {
+	// RequireBolt keeps only the links marked ⚡. It is what a subscription
+	// file is normally read with; without it every supported link is kept,
+	// which is the point of the bypass the bot offers.
+	RequireBolt bool
+}
+
+// DefaultOptions is the selection a subscription file is read with.
+func DefaultOptions() Options {
+	return Options{RequireBolt: true}
 }
 
 const (
@@ -155,12 +171,15 @@ func Parse(line string) (Link, error) {
 	if hasFrag {
 		l.Label = decodePercent(frag)
 	}
+	l.Bolt = HasBolt(l.Label)
 	return l, nil
 }
 
-// ParseAll runs the whole selection over a subscription file: parse, keep the
-// ⚡ ones, drop LTE, collapse links that differ only by label.
-func ParseAll(r io.Reader, lim Limits) ([]Link, Stats, error) {
+// ParseAll runs the whole selection over a subscription list: parse, keep the
+// ones opt asks for, drop LTE, collapse links that differ only by label. The
+// limits are applied to what is kept, so a selection never runs out of room on
+// links it is going to drop anyway.
+func ParseAll(r io.Reader, lim Limits, opt Options) ([]Link, Stats, error) {
 	if lim.MaxBytes > 0 {
 		r = io.LimitReader(r, lim.MaxBytes+1)
 	}
@@ -199,10 +218,11 @@ func ParseAll(r io.Reader, lim Limits) ([]Link, Stats, error) {
 		}
 		st.Parsed++
 
-		if !HasBolt(l.Label) {
+		if l.Bolt {
+			st.Bolt++
+		} else if opt.RequireBolt {
 			continue
 		}
-		st.Bolt++
 		if IsLTE(l.Label) {
 			st.LTE++
 			continue
@@ -228,6 +248,19 @@ func ParseAll(r io.Reader, lim Limits) ([]Link, Stats, error) {
 	st.Kept = len(kept)
 	st.Targets = len(hosts)
 	return kept, st, nil
+}
+
+// LooksLikeLinks tells a pasted list of proxy links from a list of domains or
+// IPs: any line with a scheme in it is the former. It is deliberately loose —
+// a malformed link belongs to the import flow, which can explain what is wrong
+// with it, not to the list parser, which would call it an invalid domain.
+func LooksLikeLinks(text string) bool {
+	for _, line := range strings.Split(text, "\n") {
+		if strings.Contains(strings.TrimSpace(line), "://") {
+			return true
+		}
+	}
+	return false
 }
 
 // Endpoint is the host:port a probe connects to — several links can share one.

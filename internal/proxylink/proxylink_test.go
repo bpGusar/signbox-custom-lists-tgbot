@@ -195,7 +195,7 @@ func TestParseAllFixture(t *testing.T) {
 	}
 	defer func() { _ = f.Close() }()
 
-	links, st, err := ParseAll(f, DefaultLimits())
+	links, st, err := ParseAll(f, DefaultLimits(), DefaultOptions())
 	if err != nil {
 		t.Fatalf("ParseAll: %v", err)
 	}
@@ -239,11 +239,62 @@ func TestParseAllLimits(t *testing.T) {
 		sb.WriteString(string(rune('a' + i%26)))
 		sb.WriteString("@1.2.3.4:8443#⚡\n")
 	}
-	links, st, err := ParseAll(strings.NewReader(sb.String()), Limits{MaxLinks: 5})
+	links, st, err := ParseAll(strings.NewReader(sb.String()), Limits{MaxLinks: 5}, DefaultOptions())
 	if err != nil {
 		t.Fatalf("ParseAll: %v", err)
 	}
 	if len(links) != 5 || !st.Truncated {
 		t.Fatalf("limit not applied: %d links, truncated=%t", len(links), st.Truncated)
+	}
+}
+
+// Without the ⚡ requirement the very same file keeps the links the mark would
+// have dropped, and the limit still counts only what is kept.
+func TestParseAllWithoutBolt(t *testing.T) {
+	f, err := os.Open("testdata/proxy_links.txt")
+	if err != nil {
+		t.Fatalf("open fixture: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+
+	links, st, err := ParseAll(f, DefaultLimits(), Options{})
+	if err != nil {
+		t.Fatalf("ParseAll: %v", err)
+	}
+	if st.Kept <= 7 {
+		t.Fatalf("dropping the ⚡ filter must keep more links, got %d", st.Kept)
+	}
+	if len(links) != st.Kept {
+		t.Fatalf("got %d links, stats say %d", len(links), st.Kept)
+	}
+	if st.Bolt != 10 {
+		t.Fatalf("the ⚡ count must not depend on the selection: %d", st.Bolt)
+	}
+	var noBolt int
+	for _, l := range links {
+		if IsLTE(l.Label) {
+			t.Errorf("kept an LTE link: %q", l.Label)
+		}
+		if l.Bolt != HasBolt(l.Label) {
+			t.Errorf("Bolt flag disagrees with the label: %+v", l)
+		}
+		if !l.Bolt {
+			noBolt++
+		}
+	}
+	if noBolt == 0 {
+		t.Fatal("the fixture should have links without the bolt")
+	}
+}
+
+func TestLooksLikeLinks(t *testing.T) {
+	if !LooksLikeLinks("vless://a@1.1.1.1:443#node") {
+		t.Fatal("a link must look like one")
+	}
+	if !LooksLikeLinks("kick.com\nss://b@2.2.2.2:443") {
+		t.Fatal("one link in the message is enough")
+	}
+	if LooksLikeLinks("example.com, github.com\n192.168.1.0/24") {
+		t.Fatal("a list of domains is not a list of links")
 	}
 }
