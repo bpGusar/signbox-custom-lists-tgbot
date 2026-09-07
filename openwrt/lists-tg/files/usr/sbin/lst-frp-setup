@@ -296,27 +296,43 @@ gen_config() {
 	luci_user="$(uci_get frp_luci_user)"
 	luci_pass="$(uci_get frp_luci_password)"
 
-	printf '%s' "$addr" | grep -qE '^[A-Za-z0-9._-]+$' || { die "bad server address"; return 1; }
+	# Charset checks use `case` globs, not `grep -E`: BusyBox grep has no
+	# interval expressions ({m,n}) and rejects them outright.
+	case "$addr" in
+		''|*[!A-Za-z0-9._-]*) die "bad server address"; return 1 ;;
+	esac
 	is_port "$port" || { die "bad server port"; return 1; }
-	printf '%s' "$token" | grep -qE '^[A-Za-z0-9+/=_.-]{8,512}$' || { die "bad token"; return 1; }
+	case "$token" in
+		*[!A-Za-z0-9+/=_.-]*) die "bad token"; return 1 ;;
+	esac
+	if [ "${#token}" -lt 8 ] || [ "${#token}" -gt 512 ]; then
+		die "bad token length"; return 1
+	fi
 	is_port "$ssh_port" || { die "bad ssh remote port"; return 1; }
 
 	luci_ready=""
 	if [ -n "$luci_domain" ] || [ -n "$luci_user" ] || [ -n "$luci_pass" ]; then
 		if [ -z "$luci_domain" ] || [ -z "$luci_user" ] || [ -z "$luci_pass" ]; then
 			log "LuCI proxy needs domain, user and password together — leaving it out"
-		elif ! printf '%s' "$luci_domain" | grep -qE '^[a-z0-9.-]+$'; then
-			die "bad LuCI domain"; return 1
-		elif ! printf '%s' "$luci_user" | grep -qE '^[A-Za-z0-9._-]{1,64}$'; then
-			die "bad LuCI user"; return 1
-		elif printf '%s' "$luci_pass" | grep -qE '["\\]'; then
-			die "bad LuCI password"; return 1
-		elif [ "$(printf '%s' "$luci_pass" | wc -l)" -ne 0 ]; then
-			die "bad LuCI password"; return 1
-		elif [ "${#luci_pass}" -lt 8 ] || [ "${#luci_pass}" -gt 128 ]; then
-			die "bad LuCI password length"; return 1
 		else
-			luci_ready=1
+			case "$luci_domain" in
+				*[!a-z0-9.-]*) die "bad LuCI domain"; return 1 ;;
+			esac
+			case "$luci_user" in
+				*[!A-Za-z0-9._-]*) die "bad LuCI user"; return 1 ;;
+			esac
+			case "$luci_pass" in
+				*'"'*|*'\'*) die "bad LuCI password"; return 1 ;;
+			esac
+			if [ "${#luci_user}" -gt 64 ]; then
+				die "bad LuCI user length"; return 1
+			elif [ "$(printf '%s' "$luci_pass" | wc -l)" -ne 0 ]; then
+				die "bad LuCI password (newline)"; return 1
+			elif [ "${#luci_pass}" -lt 8 ] || [ "${#luci_pass}" -gt 128 ]; then
+				die "bad LuCI password length"; return 1
+			else
+				luci_ready=1
+			fi
 		fi
 	fi
 
