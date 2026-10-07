@@ -43,6 +43,20 @@ func (a *App) setReady(chatID int64, ready bool) {
 	a.ready[chatID] = ready
 }
 
+// ensureReady lets list input through without a /start after a restart: the
+// ready flag lives in memory, but the files it vouches for are on disk.
+func (a *App) ensureReady(ctx context.Context, b *tgbot.Bot, chatID int64) bool {
+	if a.isReady(chatID) {
+		return true
+	}
+	if len(a.missingFiles(ctx)) == 0 {
+		a.setReady(chatID, true)
+		return true
+	}
+	a.sendStartCheck(ctx, b, chatID)
+	return false
+}
+
 const (
 	menuCbPrefix       = "m:"
 	menuBtnMainMenu    = "🏠 Главное меню"
@@ -189,11 +203,6 @@ func (a *App) defaultHandler(ctx context.Context, b *tgbot.Bot, update *models.U
 	// A document is the one input that carries no text at all: a subscription
 	// file with proxy links.
 	if update.Message.Document != nil {
-		chatID := update.Message.Chat.ID
-		if !a.isReady(chatID) {
-			a.sendStartCheck(ctx, b, chatID)
-			return
-		}
 		a.handleDocument(ctx, b, update)
 		return
 	}
@@ -223,16 +232,15 @@ func (a *App) defaultHandler(ctx context.Context, b *tgbot.Bot, update *models.U
 		return
 	}
 
-	if !a.isReady(chatID) {
-		a.sendStartCheck(ctx, b, chatID)
-		return
-	}
-
 	// The upload screen also takes the subscription pasted straight into the
 	// chat, so while it is armed a message of links belongs to the import flow
 	// rather than to the domain/IP parser.
 	if a.sess.ProxyFileArmed(chatID) && proxylink.LooksLikeLinks(text) {
 		a.handleProxyText(ctx, b, update)
+		return
+	}
+
+	if !a.ensureReady(ctx, b, chatID) {
 		return
 	}
 
