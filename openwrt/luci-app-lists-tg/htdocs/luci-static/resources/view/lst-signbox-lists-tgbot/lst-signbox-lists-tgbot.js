@@ -56,6 +56,45 @@ function fetchLogs() {
 	});
 }
 
+function pad2(n) {
+	return (n < 10 ? '0' : '') + n;
+}
+
+function logDownloadName() {
+	var d = new Date();
+
+	return 'lst-signbox-lists-tgbot-%d%s%s-%s%s%s.log'.format(
+		d.getFullYear(), pad2(d.getMonth() + 1), pad2(d.getDate()),
+		pad2(d.getHours()), pad2(d.getMinutes()), pad2(d.getSeconds()));
+}
+
+function downloadFullLog(ev) {
+	var btn = ev.currentTarget;
+	var path = getLogPath();
+
+	btn.disabled = true;
+
+	return fs.read_direct(path, 'blob').then(function (blob) {
+		var url = URL.createObjectURL(blob);
+		var link = E('a', {
+			'href': url,
+			'download': logDownloadName(),
+			'style': 'display: none;'
+		});
+
+		document.body.appendChild(link);
+		link.click();
+		document.body.removeChild(link);
+		window.setTimeout(function () {
+			URL.revokeObjectURL(url);
+		}, 1000);
+	}).catch(function (err) {
+		ui.addNotification(null, E('p', {}, _('Failed to download log file %s: %s').format(path, err)), 'danger');
+	}).finally(function () {
+		btn.disabled = false;
+	});
+}
+
 function setAutoRefresh(enabled) {
 	autoRefresh = enabled;
 
@@ -366,7 +405,13 @@ function buildLogSection() {
 					'click': function () {
 						fetchLogs();
 					}
-				}, _('Refresh now'))
+				}, _('Refresh now')),
+				' ',
+				E('button', {
+					'class': 'btn cbi-button-action',
+					'type': 'button',
+					'click': downloadFullLog
+				}, _('Download full log'))
 			])
 		]),
 		E('div', { 'class': 'cbi-value' }, [

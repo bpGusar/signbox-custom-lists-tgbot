@@ -10,6 +10,7 @@ import (
 
 	"lst-signbox-lists-tgbot/internal/bot"
 	"lst-signbox-lists-tgbot/internal/config"
+	"lst-signbox-lists-tgbot/internal/redact"
 )
 
 func main() {
@@ -19,7 +20,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
-	if err := setupLogging(cfg.LogPath); err != nil {
+	if err := setupLogging(cfg.LogPath, cfg.Token); err != nil {
 		log.Fatalf("setup logging: %v", err)
 	}
 
@@ -31,17 +32,20 @@ func main() {
 	}
 }
 
-func setupLogging(path string) error {
+func setupLogging(path, token string) error {
 	if path == "" {
 		return fmt.Errorf("log path is empty")
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
+	if err := redact.File(path, token); err != nil {
+		log.Printf("redact existing log: %v", err)
+	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}
-	log.SetOutput(f)
+	log.SetOutput(redact.NewWriter(f, token))
 	return nil
 }

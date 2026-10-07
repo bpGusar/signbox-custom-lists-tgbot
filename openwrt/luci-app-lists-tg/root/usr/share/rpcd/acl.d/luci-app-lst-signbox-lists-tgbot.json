@@ -3,7 +3,8 @@
     "description": "Grant access to Lists Telegram Bot configuration",
     "read": {
       "cgi-io": [
-        "exec"
+        "exec",
+        "download"
       ],
       "file": {
         "/etc/init.d/lst-signbox-lists-tgbot": [
