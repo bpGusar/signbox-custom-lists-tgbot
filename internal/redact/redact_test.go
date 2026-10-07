@@ -15,7 +15,7 @@ func TestString(t *testing.T) {
 	}{
 		{
 			name: "telegram url",
-			in:   `Post "https://api.telegram.org/bot8792349048:AAHcxUBV7sz6MRmY3uj-xYnIY2maKLbvWX8/getUpdates": EOF`,
+			in:   `Post "https://api.telegram.org/bot1234567890:AAFakeFakeFakeFakeFakeFakeFakeFake00/getUpdates": EOF`,
 			want: `Post "https://api.telegram.org/bot<redacted>/getUpdates": EOF`,
 		},
 		{
@@ -67,8 +67,8 @@ func TestStringLiteral(t *testing.T) {
 func TestWriterThroughLogger(t *testing.T) {
 	var buf bytes.Buffer
 	l := log.New(NewWriter(&buf), "", 0)
-	l.Printf("error get updates, Post %q: timeout", "https://api.telegram.org/bot8792349048:AAHcxUBV7sz6MRmY3uj-xYnIY2maKLbvWX8/getUpdates")
-	if strings.Contains(buf.String(), "AAHcxUBV7sz6") {
+	l.Printf("error get updates, Post %q: timeout", "https://api.telegram.org/bot1234567890:AAFakeFakeFakeFakeFakeFakeFakeFake00/getUpdates")
+	if strings.Contains(buf.String(), "AAFakeFake") {
 		t.Fatalf("token leaked: %q", buf.String())
 	}
 }
@@ -76,7 +76,7 @@ func TestWriterThroughLogger(t *testing.T) {
 func TestFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bot.log")
-	in := "line one\nPost https://api.telegram.org/bot8792349048:AAHcxUBV7sz6MRmY3uj-xYnIY2maKLbvWX8/getUpdates\nno newline vless://id@h:1"
+	in := "line one\nPost https://api.telegram.org/bot1234567890:AAFakeFakeFakeFakeFakeFakeFakeFake00/getUpdates\nno newline vless://id@h:1"
 	if err := os.WriteFile(path, []byte(in), 0o600); err != nil {
 		t.Fatal(err)
 	}
