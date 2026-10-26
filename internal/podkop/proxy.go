@@ -42,7 +42,8 @@ func ProxyLinksOption(t string) string {
 // AcceptsProxyLinks reports whether links can be written into the section as
 // it is configured right now.
 func (s Section) AcceptsProxyLinks() bool {
-	return s.ConnectionType == "proxy" && ProxyLinksOption(s.ProxyConfigType) != ""
+	return (s.ConnectionType == "proxy" || s.ConnectionType == forkopConnection) &&
+		ProxyLinksOption(s.ProxyConfigType) != ""
 }
 
 // ConvertibleToURLTest reports whether the section holds a single link today
@@ -51,7 +52,7 @@ func (s Section) ConvertibleToURLTest() bool {
 	return s.ConnectionType == "proxy" && s.ProxyConfigType == ProxyTypeURL
 }
 
-// ValidateProxyLink rejects anything that must not reach podkop's config.
+// ValidateProxyLink rejects anything that must not reach the backend's config.
 // podkop expands the list unquoted, so a value with whitespace in it would
 // break config generation on the next restart — this is the last place that
 // can be caught.
@@ -62,7 +63,7 @@ func ValidateProxyLink(raw string) error {
 // AddProxyLinks appends the links the section does not have yet and commits
 // once at the end. Links equal but for their label count as present.
 func AddProxyLinks(ctx context.Context, section string, links []string) (added, skipped int, err error) {
-	s, option, err := proxyTarget(ctx, section)
+	b, s, option, err := proxyTarget(ctx, section)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -90,13 +91,13 @@ func AddProxyLinks(ctx context.Context, section string, links []string) (added, 
 	}
 
 	for _, l := range pending {
-		if _, err := run(ctx, "add_list", "podkop."+section+"."+option+"="+l); err != nil {
+		if _, err := run(ctx, "add_list", b.Name+"."+section+"."+option+"="+l); err != nil {
 			return added, skipped, fmt.Errorf("uci add_list: %w", err)
 		}
 		added++
 	}
-	if _, err := run(ctx, "commit", "podkop"); err != nil {
-		return added, skipped, fmt.Errorf("uci commit podkop: %w", err)
+	if err := commit(ctx, b); err != nil {
+		return added, skipped, err
 	}
 	return added, skipped, nil
 }
@@ -104,7 +105,7 @@ func AddProxyLinks(ctx context.Context, section string, links []string) (added, 
 // ReplaceProxyLinks drops the section's list and writes the given links in its
 // place.
 func ReplaceProxyLinks(ctx context.Context, section string, links []string) error {
-	_, option, err := proxyTarget(ctx, section)
+	b, _, option, err := proxyTarget(ctx, section)
 	if err != nil {
 		return err
 	}
@@ -116,17 +117,14 @@ func ReplaceProxyLinks(ctx context.Context, section string, links []string) erro
 
 	// A section that has no list yet has nothing to delete, and uci says so
 	// with an error — the add_list calls below create the option either way.
-	_, _ = run(ctx, "delete", "podkop."+section+"."+option)
+	_, _ = run(ctx, "delete", b.Name+"."+section+"."+option)
 
 	for _, l := range links {
-		if _, err := run(ctx, "add_list", "podkop."+section+"."+option+"="+l); err != nil {
+		if _, err := run(ctx, "add_list", b.Name+"."+section+"."+option+"="+l); err != nil {
 			return fmt.Errorf("uci add_list: %w", err)
 		}
 	}
-	if _, err := run(ctx, "commit", "podkop"); err != nil {
-		return fmt.Errorf("uci commit podkop: %w", err)
-	}
-	return nil
+	return commit(ctx, b)
 }
 
 // ConvertToURLTest switches a single-link section over to a list, carrying the
@@ -136,7 +134,7 @@ func ConvertToURLTest(ctx context.Context, section string) error {
 	if !sectionNameRe.MatchString(section) {
 		return fmt.Errorf("некорректное имя секции: %q", section)
 	}
-	s, err := findSection(ctx, section)
+	b, s, err := findSection(ctx, section)
 	if err != nil {
 		return err
 	}
@@ -144,50 +142,51 @@ func ConvertToURLTest(ctx context.Context, section string) error {
 		return fmt.Errorf("секция «%s» не типа URL — переключать нечего", section)
 	}
 
-	if _, err := run(ctx, "set", "podkop."+section+".proxy_config_type="+ProxyTypeURLTest); err != nil {
+	if _, err := run(ctx, "set", b.Name+"."+section+".proxy_config_type="+ProxyTypeURLTest); err != nil {
 		return fmt.Errorf("uci set proxy_config_type: %w", err)
 	}
 	if link := strings.TrimSpace(s.ProxyString); link != "" {
 		if err := ValidateProxyLink(link); err == nil {
-			if _, err := run(ctx, "add_list", "podkop."+section+"."+urltestLinksOption+"="+link); err != nil {
+			if _, err := run(ctx, "add_list", b.Name+"."+section+"."+urltestLinksOption+"="+link); err != nil {
 				return fmt.Errorf("uci add_list: %w", err)
 			}
 		}
 	}
-	if _, err := run(ctx, "commit", "podkop"); err != nil {
-		return fmt.Errorf("uci commit podkop: %w", err)
-	}
-	return nil
+	return commit(ctx, b)
 }
 
-// GroupLatency asks podkop what the links in a section actually measure now
-// that they are live, keyed by the tag podkop gave each outbound.
+// GroupLatency asks the backend what the links in a section actually measure
+// now that they are live, keyed by the tag it gave each outbound.
 func GroupLatency(ctx context.Context, section string) (map[string]int, error) {
 	if !sectionNameRe.MatchString(section) {
 		return nil, fmt.Errorf("некорректное имя секции: %q", section)
 	}
-	out, err := podkopRun(ctx, "clash_api", "get_group_latency", section)
+	b, err := detect()
 	if err != nil {
-		return nil, fmt.Errorf("podkop clash_api: %w", err)
+		return nil, err
+	}
+	out, err := cliRun(ctx, b.Name, "clash_api", "get_group_latency", b.groupTag(section))
+	if err != nil {
+		return nil, fmt.Errorf("%s clash_api: %w", b.Name, err)
 	}
 	latency := parseLatency(out)
 	if len(latency) == 0 {
-		return nil, fmt.Errorf("podkop не вернул задержки")
+		return nil, fmt.Errorf("%s не вернул задержки", b.Name)
 	}
 	return latency, nil
 }
 
-// podkopRun executes the podkop CLI. Separate from run so tests can answer for
+// cliRun executes the backend's CLI. Separate from run so tests can answer for
 // one without answering for uci.
-var podkopRun = func(ctx context.Context, args ...string) (string, error) {
-	return runCmd(ctx, "podkop", args...)
+var cliRun = func(ctx context.Context, name string, args ...string) (string, error) {
+	return runCmd(ctx, name, args...)
 }
 
 // latencyLine matches the "<tag> ... <number>" shape podkop prints when its
 // output is not JSON.
 var latencyLine = regexp.MustCompile(`^\s*([^\s:]+)\s*[:=]?\s*(\d+)\s*(?:ms|мс)?\s*$`)
 
-// parseLatency reads podkop's answer either way it comes: the Clash API's JSON
+// parseLatency reads the backend's answer either way it comes: the Clash API's JSON
 // object, or a line per outbound.
 func parseLatency(out string) map[string]int {
 	trimmed := strings.TrimSpace(out)
@@ -220,32 +219,36 @@ func parseLatency(out string) map[string]int {
 
 // proxyTarget resolves the section and the option its links live in, refusing
 // anything the bot must not write to.
-func proxyTarget(ctx context.Context, section string) (Section, string, error) {
+func proxyTarget(ctx context.Context, section string) (Backend, Section, string, error) {
 	if !sectionNameRe.MatchString(section) {
-		return Section{}, "", fmt.Errorf("некорректное имя секции: %q", section)
+		return Backend{}, Section{}, "", fmt.Errorf("некорректное имя секции: %q", section)
 	}
-	s, err := findSection(ctx, section)
+	b, s, err := findSection(ctx, section)
 	if err != nil {
-		return Section{}, "", err
+		return Backend{}, Section{}, "", err
 	}
 	option := ProxyLinksOption(s.ProxyConfigType)
 	if option == "" {
-		return Section{}, "", fmt.Errorf("секция «%s» не принимает список ссылок (тип %q)", section, s.ProxyConfigType)
+		return Backend{}, Section{}, "", fmt.Errorf("секция «%s» не принимает список ссылок (тип %q)", section, s.ProxyConfigType)
 	}
-	return s, option, nil
+	return b, s, option, nil
 }
 
-func findSection(ctx context.Context, name string) (Section, error) {
-	secs, err := Sections(ctx)
+func findSection(ctx context.Context, name string) (Backend, Section, error) {
+	b, err := detect()
 	if err != nil {
-		return Section{}, err
+		return Backend{}, Section{}, err
+	}
+	secs, err := sectionsOf(ctx, b)
+	if err != nil {
+		return Backend{}, Section{}, err
 	}
 	for _, s := range secs {
 		if s.Name == name {
-			return s, nil
+			return b, s, nil
 		}
 	}
-	return Section{}, fmt.Errorf("секции «%s» нет в конфиге podkop", name)
+	return Backend{}, Section{}, fmt.Errorf("секции «%s» нет в конфиге %s", name, b.Name)
 }
 
 // linkKey is what makes two stored links the same one: everything but the

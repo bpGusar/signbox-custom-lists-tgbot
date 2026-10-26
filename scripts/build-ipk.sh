@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# Build .ipk packages via Dockerfile-ipk.
-# Result: dist/ipk/<arch>/*.ipk
+# Build packages via Dockerfile-ipk. The SDK decides the format: OpenWrt 24.10
+# makes .ipk, 25.12 makes .apk.
+# Result: dist/ipk/<arch>/*.ipk or dist/apk/<arch>/*.apk
 #
 # Usage:
 #   ./scripts/build-ipk.sh
+#   OPENWRT_VERSION=25.12.3 ./scripts/build-ipk.sh
 #   TARGETS="aarch64_cortex-a53" ./scripts/build-ipk.sh
 
 set -euo pipefail
@@ -29,11 +31,10 @@ update_manifest() {
 build_arch() {
 	local arch="$1"
 	local image="lst-signbox-lists-tgbot-ipk:${arch}"
-	local out="${ROOT}/dist/ipk/${arch}"
-	local container tmp
+	local full="${LISTS_TG_VERSION}-r${LISTS_TG_RELEASE}"
+	local container tmp out
 
-	log "building for ${arch} (version ${LISTS_TG_VERSION}-r${LISTS_TG_RELEASE})"
-	mkdir -p "$out"
+	log "building for ${arch} (version ${full})"
 	tmp="$(mktemp -d)"
 
 	docker build --platform "$DOCKER_PLATFORM" -f "${ROOT}/Dockerfile-ipk" \
@@ -46,7 +47,7 @@ build_arch() {
 
 	container="$(docker create "$image")"
 	cleanup() {
-		docker rm -f "$container" >/dev/null 2>&1 || true
+		[ -n "${container:-}" ] && docker rm -f "$container" >/dev/null 2>&1 || true
 		[ -n "${tmp:-}" ] && rm -rf "$tmp"
 	}
 	trap cleanup EXIT
@@ -55,11 +56,26 @@ build_arch() {
 	docker rm -f "$container" >/dev/null
 	container=""
 
-	find "$tmp" -name 'lst-signbox-lists-tgbot_*.ipk' -exec cp -f {} "$out/" \;
-	find "$tmp" -name 'luci-app-lst-signbox-lists-tgbot_*.ipk' -exec cp -f {} "$out/" \;
+	if [ -n "$(find "$tmp" -name 'lst-signbox-lists-tgbot_*.ipk' -print -quit)" ]; then
+		out="${ROOT}/dist/ipk/${arch}"
+		mkdir -p "$out"
+		find "$tmp" -name 'lst-signbox-lists-tgbot_*.ipk' -exec cp -f {} "$out/" \;
+		find "$tmp" -name 'luci-app-lst-signbox-lists-tgbot_*.ipk' -exec cp -f {} "$out/" \;
+	else
+		# apk names carry no architecture, so they are renamed the ipk way to
+		# stay unique among release assets.
+		out="${ROOT}/dist/apk/${arch}"
+		mkdir -p "$out"
+		cp -f "$(find "$tmp" -name "lst-signbox-lists-tgbot-${full}.apk" -print -quit)" \
+			"${out}/lst-signbox-lists-tgbot_${full}_${arch}.apk" \
+			|| die "lst-signbox-lists-tgbot apk not produced for ${arch}"
+		cp -f "$(find "$tmp" -name "luci-app-lst-signbox-lists-tgbot-${full}.apk" -print -quit)" \
+			"${out}/luci-app-lst-signbox-lists-tgbot_${full}_all.apk" \
+			|| die "luci-app-lst-signbox-lists-tgbot apk not produced for ${arch}"
+	fi
 
-	[ -n "$(find "$out" -maxdepth 1 -name 'lst-signbox-lists-tgbot_*.ipk' -print -quit)" ] \
-		|| die "lst-signbox-lists-tgbot ipk not produced for ${arch}"
+	[ -n "$(find "$out" -maxdepth 1 -name 'lst-signbox-lists-tgbot_*' -print -quit)" ] \
+		|| die "lst-signbox-lists-tgbot package not produced for ${arch}"
 
 	log "done: ${out}"
 	ls -la "$out/"
@@ -77,7 +93,7 @@ main() {
 	update_manifest
 
 	log "built packages:"
-	find "${ROOT}/dist/ipk" -name '*.ipk' | sort
+	find "${ROOT}/dist" \( -name '*.ipk' -o -name '*.apk' \) | sort
 }
 
 main "$@"

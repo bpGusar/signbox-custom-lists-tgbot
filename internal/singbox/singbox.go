@@ -1,10 +1,11 @@
-// Package singbox measures proxy links the way podkop will actually use them:
-// it asks podkop's own converter to turn the links into outbounds, runs a
-// throwaway sing-box over them and times a request through each one.
+// Package singbox measures proxy links the way podkop or forkop will actually
+// use them: it asks the backend's own converter to turn the links into
+// outbounds, runs a throwaway sing-box over them and times a request through
+// each one.
 //
-// Everything here leans on podkop's internals, which are not a public API, so
-// every entry point checks first and the caller is expected to fall back to a
-// plain TCP probe when Available says no.
+// Everything here leans on the backends' internals, which are not a public
+// API, so every entry point checks first and the caller is expected to fall
+// back to a plain TCP probe when Available says no.
 package singbox
 
 import (
@@ -22,16 +23,21 @@ import (
 	"strings"
 	"time"
 
+	"lst-signbox-lists-tgbot/internal/podkop"
 	"lst-signbox-lists-tgbot/internal/proxylink"
 )
 
 const (
 	// facadePath is podkop's link-to-outbound converter.
 	facadePath = "/usr/lib/podkop/sing_box_config_facade.sh"
-	// minVersion is what podkop itself requires.
-	minVersion = "1.12.4"
+	// forkopLib holds forkop's generator, which builds a whole sing-box
+	// config from a JSON fixture instead of the live UCI config.
+	forkopLib       = "/usr/lib/forkop"
+	forkopGenerator = forkopLib + "/singbox/generator.uc"
+	// forkopProbeSection is the section the links are put into for forkop.
+	forkopProbeSection = "lstprobe"
 	// minFreeKB keeps a second sing-box off a router that has no room for
-	// it. podkop's own instance is already running.
+	// it. The backend's own instance is already running.
 	minFreeKB = 24 * 1024
 	// MaxBatch caps how many outbounds one throwaway instance carries.
 	MaxBatch = 30
@@ -95,27 +101,63 @@ var fileExists = func(path string) bool {
 	return err == nil && !st.IsDir()
 }
 
+// detectBackend is a variable so tests can pick the backend.
+var detectBackend = podkop.Detect
+
 var versionRe = regexp.MustCompile(`(\d+)\.(\d+)\.(\d+)`)
+
+// toolchain is what one backend needs to turn links into outbounds.
+type toolchain struct {
+	backend   podkop.Backend
+	converter string
+	// minVersion is the sing-box the backend itself requires.
+	minVersion string
+	// extended is set for a sing-box-extended build, which forkop needs to
+	// know to accept XHTTP links.
+	extended bool
+}
+
+func toolchainFor(b podkop.Backend) toolchain {
+	if b.IsForkop() {
+		return toolchain{backend: b, converter: forkopGenerator, minVersion: "1.12.0"}
+	}
+	return toolchain{backend: b, converter: facadePath, minVersion: "1.12.4"}
+}
+
+// check finds the backend's converter and a sing-box fit to run its output.
+func check(ctx context.Context) (toolchain, string, error) {
+	b, err := detectBackend()
+	if err != nil {
+		return toolchain{}, "", err
+	}
+	tc := toolchainFor(b)
+	if !fileExists(tc.converter) {
+		return toolchain{}, "", fmt.Errorf("конвертер %s не найден (%s)", b.Name, tc.converter)
+	}
+	out, err := runner(ctx, "sing-box", []string{"version"}, "")
+	if err != nil {
+		return toolchain{}, "", fmt.Errorf("sing-box не запускается: %w", err)
+	}
+	v := versionRe.FindString(out)
+	if v == "" {
+		return toolchain{}, "", fmt.Errorf("не удалось прочитать версию sing-box")
+	}
+	if compareVersions(v, tc.minVersion) < 0 {
+		return toolchain{}, "", fmt.Errorf("нужен sing-box ≥ %s, установлен %s", tc.minVersion, v)
+	}
+	if free, err := freeMemoryKB(); err == nil && free < minFreeKB {
+		return toolchain{}, "", fmt.Errorf("мало свободной памяти (%d МБ)", free/1024)
+	}
+	tc.extended = strings.Contains(out, "extended")
+	return tc, v, nil
+}
 
 // Available reports whether this router can measure through a tunnel at all,
 // with a reason to show when it cannot.
 func Available(ctx context.Context) (bool, string) {
-	if !fileExists(facadePath) {
-		return false, "конвертер podkop не найден (" + facadePath + ")"
-	}
-	out, err := runner(ctx, "sing-box", []string{"version"}, "")
+	_, v, err := check(ctx)
 	if err != nil {
-		return false, "sing-box не запускается: " + err.Error()
-	}
-	v := versionRe.FindString(out)
-	if v == "" {
-		return false, "не удалось прочитать версию sing-box"
-	}
-	if compareVersions(v, minVersion) < 0 {
-		return false, fmt.Sprintf("нужен sing-box ≥ %s, установлен %s", minVersion, v)
-	}
-	if free, err := freeMemoryKB(); err == nil && free < minFreeKB {
-		return false, fmt.Sprintf("мало свободной памяти (%d МБ)", free/1024)
+		return false, err.Error()
 	}
 	return true, "sing-box " + v
 }
@@ -130,11 +172,12 @@ func Measure(ctx context.Context, links []proxylink.Link, o Options, onProgress 
 	if len(links) > MaxBatch {
 		return nil, fmt.Errorf("за раз можно проверить не больше %d ссылок", MaxBatch)
 	}
-	if ok, reason := Available(ctx); !ok {
-		return nil, fmt.Errorf("%s", reason)
+	tc, _, err := check(ctx)
+	if err != nil {
+		return nil, err
 	}
 
-	outbounds, tags, err := buildOutbounds(ctx, links)
+	outbounds, tags, err := buildOutbounds(ctx, tc, links)
 	if err != nil {
 		return nil, err
 	}
@@ -209,10 +252,17 @@ while IFS= read -r link; do
 done
 printf '%s' "$config"`
 
-// buildOutbounds hands the links to podkop's own converter, so what is measured
-// is what podkop would generate. The tags come back from the produced JSON
-// rather than being guessed from the naming scheme.
-func buildOutbounds(ctx context.Context, links []proxylink.Link) ([]json.RawMessage, []string, error) {
+// buildOutbounds hands the links to the backend's own converter, so what is
+// measured is what the backend would generate. The tags come back from the
+// produced JSON rather than being guessed from the naming scheme.
+func buildOutbounds(ctx context.Context, tc toolchain, links []proxylink.Link) ([]json.RawMessage, []string, error) {
+	if tc.backend.IsForkop() {
+		return buildForkopOutbounds(ctx, links, tc.extended)
+	}
+	return buildPodkopOutbounds(ctx, links)
+}
+
+func buildPodkopOutbounds(ctx context.Context, links []proxylink.Link) ([]json.RawMessage, []string, error) {
 	var stdin strings.Builder
 	for _, l := range links {
 		stdin.WriteString(l.ForUCI())
@@ -245,6 +295,115 @@ func buildOutbounds(ctx context.Context, links []proxylink.Link) ([]json.RawMess
 		tags[i] = ob.Tag
 	}
 	return cfg.Outbounds, tags, nil
+}
+
+// buildForkopOutbounds runs forkop's generator over a fixture holding one
+// connection section with the links, the way forkop's own tests drive it, and
+// keeps the outbounds made from the links. Which tag belongs to which link is
+// read from the section cache the generator writes next to the config.
+func buildForkopOutbounds(ctx context.Context, links []proxylink.Link, extended bool) ([]json.RawMessage, []string, error) {
+	dir, err := os.MkdirTemp("", "lst-forkop-probe-*")
+	if err != nil {
+		return nil, nil, fmt.Errorf("не удалось создать временный каталог: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+
+	raw := make([]string, len(links))
+	for i, l := range links {
+		raw[i] = l.ForUCI()
+	}
+	fixture := map[string]any{
+		"settings": map[string]any{".name": "settings", ".type": "settings", "log_level": "error"},
+		"section": []map[string]any{{
+			".name":                forkopProbeSection,
+			".type":                "section",
+			"enabled":              "1",
+			"action":               "connection",
+			"selector_proxy_links": raw,
+			"domain_suffix":        []string{"lst-probe.invalid"},
+		}},
+	}
+	data, err := json.Marshal(fixture)
+	if err != nil {
+		return nil, nil, err
+	}
+	fixturePath := dir + "/fixture.json"
+	if err := os.WriteFile(fixturePath, data, 0o600); err != nil {
+		return nil, nil, fmt.Errorf("не удалось записать fixture: %w", err)
+	}
+
+	xhttp := "0"
+	if extended {
+		xhttp = "1"
+	}
+	configPath := dir + "/config.json"
+	out, err := runner(ctx, "env", []string{
+		"TMP_SUBSCRIPTION_FOLDER=" + dir + "/subscriptions",
+		"FORKOP_RUNTIME_STATE_DIR=" + dir + "/state",
+		"ucode", "-L", forkopLib, forkopGenerator, "generate-config-fixture",
+		fixturePath, configPath, "127.0.0.1", "0", xhttp,
+	}, "")
+	if err != nil {
+		if line := firstLine(out); line != "" {
+			return nil, nil, fmt.Errorf("конвертер forkop не отработал: %w: %s", err, line)
+		}
+		return nil, nil, fmt.Errorf("конвертер forkop не отработал: %w", err)
+	}
+
+	var cfg struct {
+		Outbounds []json.RawMessage `json:"outbounds"`
+	}
+	if err := readJSON(configPath, &cfg); err != nil {
+		return nil, nil, fmt.Errorf("конвертер forkop вернул не JSON: %w", err)
+	}
+	var cache struct {
+		Links map[string]string `json:"links"`
+	}
+	if err := readJSON(configPath+".section-cache/"+forkopProbeSection+".json", &cache); err != nil {
+		return nil, nil, fmt.Errorf("кеш секции forkop не прочитан: %w", err)
+	}
+
+	byTag := make(map[string]json.RawMessage, len(cfg.Outbounds))
+	for _, ob := range cfg.Outbounds {
+		var head struct {
+			Tag string `json:"tag"`
+		}
+		if json.Unmarshal(ob, &head) == nil && head.Tag != "" {
+			byTag[head.Tag] = ob
+		}
+	}
+	tagByLink := make(map[string]string, len(cache.Links))
+	for tag, link := range cache.Links {
+		tagByLink[link] = tag
+	}
+
+	outbounds := make([]json.RawMessage, len(links))
+	tags := make([]string, len(links))
+	for i, link := range raw {
+		tag, ok := tagByLink[link]
+		if !ok {
+			return nil, nil, fmt.Errorf("конвертер forkop не вернул outbound для ссылки %d", i+1)
+		}
+		ob, ok := byTag[tag]
+		if !ok {
+			return nil, nil, fmt.Errorf("в конфиге forkop нет outbound %q", tag)
+		}
+		outbounds[i], tags[i] = ob, tag
+	}
+	return outbounds, tags, nil
+}
+
+func readJSON(path string, v any) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, v)
+}
+
+func firstLine(s string) string {
+	line, _, _ := strings.Cut(strings.TrimSpace(s), "\n")
+	return strings.TrimSpace(line)
 }
 
 func writeConfig(outbounds []json.RawMessage, port int) (string, error) {

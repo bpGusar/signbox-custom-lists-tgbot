@@ -290,8 +290,8 @@ func TestPluralLinks(t *testing.T) {
 }
 
 func TestProxyUploadHintText(t *testing.T) {
-	text := proxyUploadHintText()
-	for _, want := range []string{"vless", "ss", "trojan", "hysteria2", "⚡", "LTE", "1024 КБ", "5000", "300"} {
+	text := proxyUploadHintText("forkop")
+	for _, want := range []string{"vless", "ss", "trojan", "hysteria2", "⚡", "LTE", "1024 КБ", "5000", "300", "секцию forkop"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("upload hint is missing %q:\n%s", want, text)
 		}

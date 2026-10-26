@@ -12,7 +12,6 @@ REPO_API="https://api.github.com/repos/bpGusar/signbox-custom-lists-tgbot/releas
 REPO_OWNER="bpGusar"
 REPO_NAME="signbox-custom-lists-tgbot"
 REPO_BRANCH="${LST_SIGNBOX_LISTS_TGBOT_REPO_BRANCH:-main}"
-FALLBACK_REPO_URL="https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/${REPO_BRANCH}/dist/ipk"
 DIST_RAW_URL="https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/${REPO_BRANCH}/dist"
 DOWNLOAD_DIR="/tmp/lst-signbox-lists-tgbot-install"
 LOG="/tmp/lst-signbox-lists-tgbot-upgrade.log"
@@ -32,8 +31,17 @@ need_root() {
 	[ "$(id -u)" -eq 0 ] || die "run as root"
 }
 
+# OpenWrt 25.12 replaced opkg with apk, and the packages are built for each.
+if command -v apk >/dev/null 2>&1; then
+	PKG_MGR="apk"
+	PKG_EXT="apk"
+else
+	PKG_MGR="opkg"
+	PKG_EXT="ipk"
+fi
+
 need_openwrt() {
-	command -v opkg >/dev/null 2>&1 || die "opkg not found"
+	command -v "$PKG_MGR" >/dev/null 2>&1 || die "neither apk nor opkg found"
 	[ -f /etc/openwrt_release ] || die "unsupported system"
 }
 
@@ -56,6 +64,11 @@ ver_lt() {
 }
 
 installed_version() {
+	if [ "$PKG_MGR" = "apk" ]; then
+		apk list --installed lst-signbox-lists-tgbot 2>/dev/null |
+			awk '$1 ~ /^lst-signbox-lists-tgbot-[0-9]/ {sub(/^lst-signbox-lists-tgbot-/, "", $1); print $1; exit}'
+		return
+	fi
 	opkg info lst-signbox-lists-tgbot 2>/dev/null | awk -F': ' '/^Version:/{print $2; exit}'
 }
 
@@ -156,9 +169,11 @@ manifest_package_name() {
 	local manifest="$1"
 	local package="$2"
 	local arch="$3"
+	local section="packages"
 	local template
 
-	template="$(grep -F "\"${package}\"" "$manifest" | sed -n 's/.*: *"\([^"]*\)".*/\1/p' | head -n 1)"
+	[ "$PKG_EXT" = "apk" ] && section="apk_packages"
+	template="$(sed -n "/\"${section}\"/,/^ *}/p" "$manifest" | grep -F "\"${package}\"" | sed -n 's/.*: *"\([^"]*\)".*/\1/p' | head -n 1)"
 	[ -n "$template" ] || return 1
 	printf '%s' "$template" | sed "s/\${ARCH}/${arch}/g"
 }
@@ -198,8 +213,8 @@ release_package_names() {
 	release_ver="$(printf '%s' "$api_response" | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"v[^"]*"' | head -n 1 | sed 's/.*"v\([^"]*\)".*/\1/')"
 	[ -n "$release_ver" ] || return 1
 
-	PACKAGE_LISTS="lst-signbox-lists-tgbot_${release_ver}-r1_${arch}.ipk"
-	PACKAGE_LUCI="luci-app-lst-signbox-lists-tgbot_${release_ver}-r1_all.ipk"
+	PACKAGE_LISTS="lst-signbox-lists-tgbot_${release_ver}-r1_${arch}.${PKG_EXT}"
+	PACKAGE_LUCI="luci-app-lst-signbox-lists-tgbot_${release_ver}-r1_all.${PKG_EXT}"
 	return 0
 }
 
@@ -223,7 +238,7 @@ fetch_from_release() {
 
 fetch_from_raw() {
 	local arch="$1"
-	local base_url="${LST_SIGNBOX_LISTS_TGBOT_REPO_URL:-$FALLBACK_REPO_URL}"
+	local base_url="${LST_SIGNBOX_LISTS_TGBOT_REPO_URL:-${DIST_RAW_URL}/${PKG_EXT}}"
 
 	log "fallback: raw packages from ${base_url}/${arch}"
 	fetch_manifest "$arch" || return 1
@@ -259,16 +274,6 @@ backup_current_config() {
 	PREV_STATE_PATH="$(uci -q get lst-signbox-lists-tgbot.main.state_path || true)"
 	PREV_LOG_PATH="$(uci -q get lst-signbox-lists-tgbot.main.log_path || true)"
 	PREV_AUTO_RESTART="$(uci -q get lst-signbox-lists-tgbot.main.auto_restart || true)"
-	PREV_FRP_ENABLED="$(uci -q get lst-signbox-lists-tgbot.main.frp_enabled || true)"
-	PREV_FRP_VERSION="$(uci -q get lst-signbox-lists-tgbot.main.frp_version || true)"
-	PREV_FRP_SERVER_ADDR="$(uci -q get lst-signbox-lists-tgbot.main.frp_server_addr || true)"
-	PREV_FRP_SERVER_PORT="$(uci -q get lst-signbox-lists-tgbot.main.frp_server_port || true)"
-	PREV_FRP_TOKEN="$(uci -q get lst-signbox-lists-tgbot.main.frp_token || true)"
-	PREV_FRP_PROXY_PREFIX="$(uci -q get lst-signbox-lists-tgbot.main.frp_proxy_prefix || true)"
-	PREV_FRP_SSH_REMOTE_PORT="$(uci -q get lst-signbox-lists-tgbot.main.frp_ssh_remote_port || true)"
-	PREV_FRP_LUCI_DOMAIN="$(uci -q get lst-signbox-lists-tgbot.main.frp_luci_domain || true)"
-	PREV_FRP_LUCI_USER="$(uci -q get lst-signbox-lists-tgbot.main.frp_luci_user || true)"
-	PREV_FRP_LUCI_PASSWORD="$(uci -q get lst-signbox-lists-tgbot.main.frp_luci_password || true)"
 }
 
 restore_config() {
@@ -310,54 +315,14 @@ restore_config() {
 		uci set "lst-signbox-lists-tgbot.main.auto_restart=${PREV_AUTO_RESTART}"
 		changed=1
 	fi
-	if [ -n "$PREV_FRP_ENABLED" ]; then
-		uci set "lst-signbox-lists-tgbot.main.frp_enabled=${PREV_FRP_ENABLED}"
-		changed=1
-	fi
-	if [ -n "$PREV_FRP_VERSION" ]; then
-		uci set "lst-signbox-lists-tgbot.main.frp_version=${PREV_FRP_VERSION}"
-		changed=1
-	fi
-	if [ -n "$PREV_FRP_SERVER_ADDR" ]; then
-		uci set "lst-signbox-lists-tgbot.main.frp_server_addr=${PREV_FRP_SERVER_ADDR}"
-		changed=1
-	fi
-	if [ -n "$PREV_FRP_SERVER_PORT" ]; then
-		uci set "lst-signbox-lists-tgbot.main.frp_server_port=${PREV_FRP_SERVER_PORT}"
-		changed=1
-	fi
-	if [ -n "$PREV_FRP_TOKEN" ]; then
-		uci set "lst-signbox-lists-tgbot.main.frp_token=${PREV_FRP_TOKEN}"
-		changed=1
-	fi
-	if [ -n "$PREV_FRP_PROXY_PREFIX" ]; then
-		uci set "lst-signbox-lists-tgbot.main.frp_proxy_prefix=${PREV_FRP_PROXY_PREFIX}"
-		changed=1
-	fi
-	if [ -n "$PREV_FRP_SSH_REMOTE_PORT" ]; then
-		uci set "lst-signbox-lists-tgbot.main.frp_ssh_remote_port=${PREV_FRP_SSH_REMOTE_PORT}"
-		changed=1
-	fi
-	if [ -n "$PREV_FRP_LUCI_DOMAIN" ]; then
-		uci set "lst-signbox-lists-tgbot.main.frp_luci_domain=${PREV_FRP_LUCI_DOMAIN}"
-		changed=1
-	fi
-	if [ -n "$PREV_FRP_LUCI_USER" ]; then
-		uci set "lst-signbox-lists-tgbot.main.frp_luci_user=${PREV_FRP_LUCI_USER}"
-		changed=1
-	fi
-	if [ -n "$PREV_FRP_LUCI_PASSWORD" ]; then
-		uci set "lst-signbox-lists-tgbot.main.frp_luci_password=${PREV_FRP_LUCI_PASSWORD}"
-		changed=1
-	fi
 
 	if [ "$changed" -eq 1 ]; then
 		uci commit lst-signbox-lists-tgbot
 	fi
 }
 
-opkg_locked() {
-	printf '%s' "$1" | grep -q 'Could not lock .*opkg\.lock'
+pkg_locked() {
+	printf '%s' "$1" | grep -q -i -e 'Could not lock .*opkg\.lock' -e 'unable to lock database'
 }
 
 # opkg exits non-zero whenever it prints a "Collected errors:" block, even
@@ -372,29 +337,51 @@ opkg_only_conffile_errors() {
 	[ -z "$extra" ]
 }
 
-opkg_install_retry() {
+# apk keeps a changed conffile on its own (the new default goes to *.apk-new)
+# and exits 0, so only opkg needs the conffile workaround.
+pkg_install_retry() {
 	local attempt=0
 	local max_attempts=5
 	local out=""
 
 	while [ "$attempt" -lt "$max_attempts" ]; do
-		if out="$(opkg install "$@" 2>&1)"; then
-			return 0
-		fi
-		if opkg_only_conffile_errors "$out"; then
-			log "opkg install ok (existing conffile kept, new default saved as -opkg)"
-			return 0
+		if [ "$PKG_MGR" = "apk" ]; then
+			out="$(apk add "$@" 2>&1)" && return 0
+		else
+			if out="$(opkg install "$@" 2>&1)"; then
+				return 0
+			fi
+			if opkg_only_conffile_errors "$out"; then
+				log "opkg install ok (existing conffile kept, new default saved as -opkg)"
+				return 0
+			fi
 		fi
 		attempt=$((attempt + 1))
-		if opkg_locked "$out" && [ "$attempt" -lt "$max_attempts" ]; then
-			log "opkg locked, retrying (${attempt}/${max_attempts})"
+		if pkg_locked "$out" && [ "$attempt" -lt "$max_attempts" ]; then
+			log "${PKG_MGR} locked, retrying (${attempt}/${max_attempts})"
 			sleep 2
 			continue
 		fi
-		[ -n "$out" ] && log "opkg install failed: $out"
+		[ -n "$out" ] && log "${PKG_MGR} install failed: $out"
 		return 1
 	done
 	return 1
+}
+
+pkg_install_file_retry() {
+	if [ "$PKG_MGR" = "apk" ]; then
+		pkg_install_retry --allow-untrusted --force-reinstall "$1"
+	else
+		pkg_install_retry --force-reinstall --force-downgrade "$1"
+	fi
+}
+
+pkg_update() {
+	if [ "$PKG_MGR" = "apk" ]; then
+		apk update
+	else
+		opkg update
+	fi
 }
 
 # Downloading is the step that fails first on a router whose only fetcher is a
@@ -405,8 +392,8 @@ prepare_download_tools() {
 		return 0
 	fi
 	log "curl not found, installing it for downloads"
-	opkg update >/dev/null 2>&1 || true
-	opkg_install_retry ca-bundle curl >/dev/null 2>&1 || true
+	pkg_update >/dev/null 2>&1 || true
+	pkg_install_retry ca-bundle curl >/dev/null 2>&1 || true
 	if ! command -v curl >/dev/null 2>&1; then
 		log "curl unavailable, falling back to wget"
 	fi
@@ -414,22 +401,22 @@ prepare_download_tools() {
 }
 
 install_packages() {
-	local arch="$1" lists_ipk luci_ipk
+	local arch="$1" lists_pkg luci_pkg
 
 	log "updating package lists"
-	opkg update >/dev/null 2>&1 || true
-	opkg_install_retry ca-bundle wget >/dev/null 2>&1 || true
-	opkg_install_retry luci-base luci-compat >/dev/null 2>&1 || true
+	pkg_update >/dev/null 2>&1 || true
+	pkg_install_retry ca-bundle wget >/dev/null 2>&1 || true
+	pkg_install_retry luci-base luci-compat >/dev/null 2>&1 || true
 
-	log "installing lst-signbox-lists-tgbot (${arch})"
-	lists_ipk="${DOWNLOAD_DIR}/${PACKAGE_LISTS}"
-	[ -f "$lists_ipk" ] || { die "lst-signbox-lists-tgbot package not found"; return 1; }
-	opkg_install_retry --force-reinstall --force-downgrade "$lists_ipk" || { die "opkg install failed for bot package"; return 1; }
+	log "installing lst-signbox-lists-tgbot (${arch}, ${PKG_MGR})"
+	lists_pkg="${DOWNLOAD_DIR}/${PACKAGE_LISTS}"
+	[ -f "$lists_pkg" ] || { die "lst-signbox-lists-tgbot package not found"; return 1; }
+	pkg_install_file_retry "$lists_pkg" || { die "${PKG_MGR} install failed for bot package"; return 1; }
 
 	log "installing luci-app-lst-signbox-lists-tgbot"
-	luci_ipk="${DOWNLOAD_DIR}/${PACKAGE_LUCI}"
-	[ -f "$luci_ipk" ] || { die "luci-app package not found"; return 1; }
-	opkg_install_retry --force-reinstall --force-downgrade "$luci_ipk" || { die "opkg install failed for luci package"; return 1; }
+	luci_pkg="${DOWNLOAD_DIR}/${PACKAGE_LUCI}"
+	[ -f "$luci_pkg" ] || { die "luci-app package not found"; return 1; }
+	pkg_install_file_retry "$luci_pkg" || { die "${PKG_MGR} install failed for luci package"; return 1; }
 	rm -f /tmp/luci-indexcache /tmp/luci-modulecache 2>/dev/null || true
 }
 
@@ -474,11 +461,12 @@ write_version_cache() {
 	printf 'CURRENT=%s\nLATEST=%s\n' "$1" "$2" > "$VERSION_CACHE"
 }
 
-# While an upgrade is running, `opkg install` holds the global opkg lock for
-# the whole install. The LuCI page polls `status` every couple of seconds
-# (see UPGRADE_POLL_INTERVAL in the frontend), and re-querying `opkg info`
-# here would fight that same lock, causing spurious "opkg locked, retrying"
-# loops in the running install. Serve cached values instead while running.
+# While an upgrade is running, the install holds the package manager's global
+# lock for the whole install. The LuCI page polls `status` every couple of
+# seconds (see UPGRADE_POLL_INTERVAL in the frontend), and re-querying the
+# installed version here would fight that same lock, causing spurious "locked,
+# retrying" loops in the running install. Serve cached values instead while
+# running.
 build_version_info() {
 	local current latest update_available running state
 

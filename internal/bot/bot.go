@@ -26,9 +26,11 @@ type App struct {
 	readyMu    sync.Mutex
 	ready      map[int64]bool
 	verChecker *version.Checker
-	// readSections reads podkop's config. It is a field so the screens can be
-	// exercised without a router to run uci on; nil means the real thing.
+	// readSections reads the backend's config. It is a field so the screens
+	// can be exercised without a router to run uci on; nil means the real thing.
 	readSections func(context.Context) ([]podkop.Section, error)
+	// detectBackend is the same for finding which backend is installed.
+	detectBackend func() (podkop.Backend, error)
 }
 
 func (a *App) isReady(chatID int64) bool {
@@ -58,11 +60,10 @@ func (a *App) ensureReady(ctx context.Context, b *tgbot.Bot, chatID int64) bool 
 }
 
 const (
-	menuCbPrefix       = "m:"
-	menuBtnMainMenu    = "🏠 Главное меню"
-	menuBtnCheckPodkop = "🔗 Проверить Podkop"
-	menuBtnSettings    = "⚙️ Настройки"
-	tgMaxMessageLen    = 4096
+	menuCbPrefix    = "m:"
+	menuBtnMainMenu = "🏠 Главное меню"
+	menuBtnSettings = "⚙️ Настройки"
+	tgMaxMessageLen = 4096
 )
 
 func Run(ctx context.Context, cfg *config.Config) error {
@@ -89,7 +90,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 
 	opts := []tgbot.Option{
 		tgbot.WithDefaultHandler(app.defaultHandler),
-		tgbot.WithMiddlewares(app.authMiddleware),
+		tgbot.WithMiddlewares(app.authMiddleware, app.backendMiddleware),
 	}
 
 	b, err := tgbot.New(cfg.Token, opts...)
@@ -109,7 +110,6 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	b.RegisterHandler(tgbot.HandlerTypeMessageText, "/gi_", tgbot.MatchTypePrefix, app.handleAddCategoryCommand)
 	b.RegisterHandler(tgbot.HandlerTypeCallbackQueryData, "s:", tgbot.MatchTypePrefix, app.handleCallback)
 	b.RegisterHandler(tgbot.HandlerTypeCallbackQueryData, proxyCbPrefix, tgbot.MatchTypePrefix, app.handleProxyCallback)
-	b.RegisterHandler(tgbot.HandlerTypeCallbackQueryData, frpCbPrefix, tgbot.MatchTypePrefix, app.handleFrpCallback)
 	b.RegisterHandler(tgbot.HandlerTypeCallbackQueryData, menuCbPrefix, tgbot.MatchTypePrefix, app.handleMenuCallback)
 
 	log.Println("lst-signbox-lists-tgbot started")
@@ -121,7 +121,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 
 const (
 	versionCheckInterval = 6 * time.Hour
-	// The router's uplink (and podkop's tunnel) may still be coming up right
+	// The router's uplink (and the backend's tunnel) may still be coming up right
 	// after boot, so the first check waits instead of burning its attempt.
 	versionCheckStartDelay = 2 * time.Minute
 )

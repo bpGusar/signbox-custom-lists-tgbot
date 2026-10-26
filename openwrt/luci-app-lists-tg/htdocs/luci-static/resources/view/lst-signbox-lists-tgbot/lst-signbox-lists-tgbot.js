@@ -457,6 +457,7 @@ return view.extend({
 		o = s.option(form.Value, 'restart_cmd', _('Restart command'));
 		o.default = '/etc/init.d/podkop restart';
 		o.placeholder = '/etc/init.d/podkop restart';
+		o.description = _('A podkop or forkop command is applied to whichever of them is installed: the bot detects it on its own.');
 		o.rmempty = false;
 
 		o = s.option(form.Value, 'service_label', _('Service label'));
