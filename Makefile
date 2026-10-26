@@ -10,7 +10,7 @@ LDFLAGS := -s -w \
 
 OPENWRT_VERSION ?= 24.10.5
 OPENWRT_APK_VERSION ?= 25.12.3
-IPK_TARGETS ?= aarch64_cortex-a53 arm_cortex-a7_neon-vfpv4 mipsel_24kc x86_64
+IPK_TARGETS ?= aarch64_cortex-a53 aarch64_generic arm_cortex-a7_neon-vfpv4 mipsel_24kc x86_64
 
 build:
 	go build -trimpath -ldflags="$(LDFLAGS)" -o $(BINARY) $(PKG)

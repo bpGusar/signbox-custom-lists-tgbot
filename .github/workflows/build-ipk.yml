@@ -73,6 +73,7 @@ jobs:
       matrix:
         arch:
           - aarch64_cortex-a53
+          - aarch64_generic
           - arm_cortex-a7_neon-vfpv4
           - mipsel_24kc
           - x86_64
@@ -211,9 +212,17 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Download package artifacts
+      - name: Download IPK artifacts
         uses: actions/download-artifact@v4
         with:
+          pattern: ipk-*
+          path: artifacts
+          merge-multiple: false
+
+      - name: Download APK artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: apk-*
           path: artifacts
           merge-multiple: false
 
@@ -221,7 +230,7 @@ jobs:
         run: |
           rm -rf dist/ipk/*/ dist/apk/*/
           for format in ipk apk; do
-            for arch in aarch64_cortex-a53 arm_cortex-a7_neon-vfpv4 mipsel_24kc x86_64; do
+            for arch in aarch64_cortex-a53 aarch64_generic arm_cortex-a7_neon-vfpv4 mipsel_24kc x86_64; do
               mkdir -p "dist/${format}/${arch}"
               [ -d "artifacts/${format}-${arch}" ] && cp -f artifacts/${format}-${arch}/*.${format} "dist/${format}/${arch}/" || true
             done

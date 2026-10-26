@@ -12,7 +12,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OPENWRT_VERSION="${OPENWRT_VERSION:-24.10.5}"
-TARGETS="${TARGETS:-aarch64_cortex-a53 arm_cortex-a7_neon-vfpv4 mipsel_24kc x86_64}"
+TARGETS="${TARGETS:-aarch64_cortex-a53 aarch64_generic arm_cortex-a7_neon-vfpv4 mipsel_24kc x86_64}"
 DOCKER_PLATFORM="${DOCKER_PLATFORM:-linux/amd64}"
 LISTS_TG_VERSION="${LISTS_TG_VERSION:-$("${ROOT}/scripts/version.sh")}"
 LISTS_TG_RELEASE="${LISTS_TG_RELEASE:-1}"
