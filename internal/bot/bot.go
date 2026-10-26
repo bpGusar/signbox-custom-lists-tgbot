@@ -228,7 +228,7 @@ func (a *App) defaultHandler(ctx context.Context, b *tgbot.Bot, update *models.U
 		a.handleAwaitedText(ctx, b, update, kind, opID, text)
 		return
 	}
-	if strings.HasPrefix(text, "/") {
+	if isCommand(text) {
 		return
 	}
 
@@ -298,6 +298,12 @@ func (a *App) authMiddleware(next tgbot.HandlerFunc) tgbot.HandlerFunc {
 
 		next(ctx, b, update)
 	}
+}
+
+// isCommand tells a bot command from a list that opens with a "//" line, such
+// as a "// #cat:" header or a disabled entry.
+func isCommand(text string) bool {
+	return strings.HasPrefix(text, "/") && !strings.HasPrefix(text, "//")
 }
 
 func isStartCommand(text string) bool {

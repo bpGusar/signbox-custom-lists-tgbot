@@ -43,3 +43,12 @@ func TestGroupByCategoryFallsBackToOpCategory(t *testing.T) {
 		t.Fatal("no categories line expected without headers")
 	}
 }
+
+func TestListStartingWithCommentIsNotCommand(t *testing.T) {
+	if isCommand("// #cat: netflix\nnetflix.com") || isCommand("// kick.com") {
+		t.Fatal("a list opening with // must reach the list parser")
+	}
+	if !isCommand("/menu") {
+		t.Fatal("/menu is a command")
+	}
+}
