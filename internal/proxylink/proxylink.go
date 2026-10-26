@@ -102,7 +102,7 @@ var schemes = map[string]bool{
 	"hy2":       true,
 }
 
-// SupportedScheme reports whether podkop would accept a link of this scheme.
+// SupportedScheme reports whether podkop and forkop would accept a link of this scheme.
 func SupportedScheme(scheme string) bool {
 	_, ok := schemes[strings.ToLower(scheme)]
 	return ok
@@ -146,7 +146,7 @@ func Parse(line string) (Link, error) {
 	scheme = strings.ToLower(scheme)
 	udp, known := schemes[scheme]
 	if !known {
-		return Link{}, fmt.Errorf("схема %q не поддерживается podkop", scheme)
+		return Link{}, fmt.Errorf("схема %q не поддерживается podkop и forkop", scheme)
 	}
 
 	base, frag, hasFrag := strings.Cut(rest, "#")
@@ -309,11 +309,11 @@ func ValidateRaw(raw string) error {
 	}
 	scheme, _, ok := strings.Cut(raw, "://")
 	if !ok || !SupportedScheme(scheme) {
-		return fmt.Errorf("схема не поддерживается podkop")
+		return fmt.Errorf("схема не поддерживается podkop и forkop")
 	}
 	for _, r := range raw {
 		if unicode.IsSpace(r) || r == '\'' || r == '\\' || r < 0x20 || r == 0x7f {
-			return fmt.Errorf("в ссылке есть пробел или служебный символ — podkop разберёт её неверно")
+			return fmt.Errorf("в ссылке есть пробел или служебный символ — podkop и forkop разберут её неверно")
 		}
 	}
 	return nil

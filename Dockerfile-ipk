@@ -1,4 +1,5 @@
-# Build lst-signbox-lists-tgbot and luci-app-lst-signbox-lists-tgbot .ipk packages.
+# Build lst-signbox-lists-tgbot and luci-app-lst-signbox-lists-tgbot packages:
+# .ipk with the OpenWrt 24.10 SDK, .apk with 25.12.
 # Go binary is cross-compiled in stage 1, OpenWrt SDK only packages files.
 #
 #   docker build -f Dockerfile-ipk --build-arg ARCH=aarch64_cortex-a53 -t lst-signbox-lists-tgbot-ipk .

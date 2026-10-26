@@ -40,8 +40,8 @@ func TestString(t *testing.T) {
 		},
 		{
 			name: "uci secrets",
-			in:   `lst-signbox-lists-tgbot.main.frp_token='s3cr3t' frp_luci_password="hunter2" password: qwerty`,
-			want: `lst-signbox-lists-tgbot.main.frp_token=<redacted> frp_luci_password=<redacted> password: <redacted>`,
+			in:   `lst-signbox-lists-tgbot.main.token='s3cr3t' luci_password="hunter2" password: qwerty`,
+			want: `lst-signbox-lists-tgbot.main.token=<redacted> luci_password=<redacted> password: <redacted>`,
 		},
 		{
 			name: "plain text untouched",

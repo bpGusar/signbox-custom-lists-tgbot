@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -11,7 +12,6 @@ import (
 	tgbot "github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
 
-	"lst-signbox-lists-tgbot/internal/frp"
 	"lst-signbox-lists-tgbot/internal/lists"
 	"lst-signbox-lists-tgbot/internal/podkop"
 	"lst-signbox-lists-tgbot/internal/service"
@@ -109,7 +109,11 @@ func (a *App) versionHeader(ctx context.Context) string {
 }
 
 func (a *App) menuBtnRestart() string {
-	return "🔄 Перезапустить " + a.cfg.ServiceLabel
+	return "🔄 Перезапустить " + a.serviceLabel()
+}
+
+func menuBtnCheckBackend(b podkop.Backend) string {
+	return "🔗 Проверить " + b.Title
 }
 
 func (a *App) menuBtnAutoRestart() string {
@@ -126,7 +130,7 @@ func (a *App) settingsMenuText() string {
 		if a.cfg.GetAutoRestart() {
 			status = "вкл"
 		}
-		text += fmt.Sprintf("\n\nАвтоперезапуск %s после изменения списков: %s", a.cfg.ServiceLabel, status)
+		text += fmt.Sprintf("\n\nАвтоперезапуск %s после изменения списков: %s", a.serviceLabel(), status)
 	}
 	return text
 }
@@ -203,7 +207,7 @@ func (a *App) mainMenuInlineKeyboard() *models.InlineKeyboardMarkup {
 }
 
 func (a *App) hasSettingsMenu() bool {
-	return a.cfg.RestartCmd != "" || service.UpgradeSupported() || frp.Supported()
+	return a.cfg.RestartCmd != "" || service.UpgradeSupported()
 }
 
 func (a *App) settingsMenuInlineKeyboard() *models.InlineKeyboardMarkup {
@@ -216,9 +220,9 @@ func (a *App) settingsMenuInlineKeyboard() *models.InlineKeyboardMarkup {
 			Text: a.menuBtnAutoRestart(), CallbackData: menuCbPrefix + "toggle_auto_restart",
 		}})
 	}
-	if isPodkopCommand(a.cfg.RestartCmd) {
+	if be, ok := a.managedBackend(); ok {
 		rows = append(rows, []models.InlineKeyboardButton{{
-			Text: menuBtnCheckPodkop, CallbackData: menuCbPrefix + "check_podkop",
+			Text: menuBtnCheckBackend(be), CallbackData: menuCbPrefix + "check_podkop",
 		}})
 	}
 	if service.UpgradeSupported() {
@@ -296,14 +300,14 @@ func (a *App) handleMenuCallback(ctx context.Context, b *tgbot.Bot, update *mode
 		a.showProxyUploadHint(ctx, b, update, chatID)
 	case "check_podkop":
 		a.logf(chatID, "menu check_podkop")
-		text, ok := a.podkopIntegrationText(ctx)
+		text, ok := a.backendIntegrationText(ctx)
 		if !ok {
-			text = "ℹ️ Проверка интеграции доступна только для podkop."
+			text = "ℹ️ Проверка интеграции доступна только для podkop и forkop."
 		}
 		a.editCallbackMessageMarkup(ctx, b, update, text, a.backToSettingsInlineKeyboard())
 	case "settings":
 		a.logf(chatID, "menu settings")
-		a.editCallbackMessageMarkup(ctx, b, update, a.settingsMenuText(), a.settingsKeyboardFor(update))
+		a.editCallbackMessageMarkup(ctx, b, update, a.settingsMenuText(), a.settingsMenuInlineKeyboard())
 	case "toggle_auto_restart":
 		if a.cfg.RestartCmd == "" {
 			break
@@ -313,11 +317,11 @@ func (a *App) handleMenuCallback(ctx context.Context, b *tgbot.Bot, update *mode
 			a.logf(chatID, "toggle_auto_restart error err=%v", err)
 			a.editCallbackMessageMarkup(ctx, b, update,
 				a.settingsMenuText()+"\n\n❌ Не удалось сохранить: "+err.Error(),
-				a.settingsKeyboardFor(update))
+				a.settingsMenuInlineKeyboard())
 			break
 		}
 		a.logf(chatID, "toggle_auto_restart enabled=%t", newVal)
-		a.editCallbackMessageMarkup(ctx, b, update, a.settingsMenuText(), a.settingsKeyboardFor(update))
+		a.editCallbackMessageMarkup(ctx, b, update, a.settingsMenuText(), a.settingsMenuInlineKeyboard())
 	case "main_menu":
 		a.logf(chatID, "menu main_inline")
 		a.editCallbackMessageMarkup(ctx, b, update, a.welcomeText(ctx), a.mainMenuInlineKeyboard())
@@ -360,13 +364,17 @@ func (a *App) missingFiles(ctx context.Context) []string {
 func (a *App) sectionsSummary(ctx context.Context) string {
 	secs := a.sections(ctx)
 	if len(secs) == 1 && secs[0].Name == "" {
-		return fmt.Sprintf("📄 Домены: %s\n📄 IP: %s", a.cfg.DomainList, a.cfg.IPList)
+		text := fmt.Sprintf("📄 Домены: %s\n📄 IP: %s", a.cfg.DomainList, a.cfg.IPList)
+		if _, err := a.backend(); errors.Is(err, podkop.ErrNotInstalled) {
+			text += "\nℹ️ Не найден ни podkop, ни forkop — работаю с файлами из настроек бота."
+		}
+		return text
 	}
 	names := make([]string, 0, len(secs))
 	for _, s := range secs {
 		names = append(names, s.Name)
 	}
-	return "🗂 Секции podkop: " + strings.Join(names, ", ")
+	return "🗂 Секции " + a.backendName() + ": " + strings.Join(names, ", ")
 }
 
 func (a *App) sendListFile(ctx context.Context, b *tgbot.Bot, chatID int64, tgt listTarget) {
@@ -855,8 +863,9 @@ func (a *App) runRestartNotify(parentCtx context.Context, b *tgbot.Bot, chatID i
 		return
 	}
 
-	label := a.cfg.ServiceLabel
-	a.logf(chatID, "restart started label=%q cmd=%q auto=%t", label, a.cfg.RestartCmd, a.cfg.GetAutoRestart())
+	label := a.serviceLabel()
+	cmd := a.restartCmd()
+	a.logf(chatID, "restart started label=%q cmd=%q auto=%t", label, cmd, a.cfg.GetAutoRestart())
 
 	sent, err := b.SendMessage(parentCtx, &tgbot.SendMessageParams{
 		ChatID: chatID,
@@ -872,7 +881,7 @@ func (a *App) runRestartNotify(parentCtx context.Context, b *tgbot.Bot, chatID i
 	defer cancel()
 
 	start := time.Now()
-	res := service.RunRestartWithProgress(rctx, a.cfg.RestartCmd, func(elapsed time.Duration) {
+	res := service.RunRestartWithProgress(rctx, cmd, func(elapsed time.Duration) {
 		if _, err := b.EditMessageText(rctx, &tgbot.EditMessageTextParams{
 			ChatID:    chatID,
 			MessageID: messageID,
@@ -932,12 +941,12 @@ func (a *App) editOrResend(ctx context.Context, b *tgbot.Bot, chatID int64, mess
 func (a *App) formatRestartResult(ctx context.Context, chatID int64, res service.RestartResult, label string, durationSec int) string {
 	if res.Success {
 		text := fmt.Sprintf("✅ %s перезапущен (%ds).", label, durationSec)
-		if isPodkopCommand(a.cfg.RestartCmd) {
+		if be, ok := a.managedBackend(); ok {
 			secs, err := podkop.Sections(ctx)
 			if err != nil {
-				a.logf(chatID, "podkop_sections_error err=%v", err)
+				a.logf(chatID, "backend_sections_error err=%v", err)
 			} else if !anyListBound(secs) {
-				text += "\n\n⚠️ Podkop перезапущен, но ни в одной его секции нет привязанных списков.\n" +
+				text += "\n\n⚠️ " + be.Title + " перезапущен, но ни в одной его секции нет привязанных списков.\n" +
 					"Откройте «" + btnManage + "», выберите секцию и привяжите файл."
 			}
 		}
@@ -958,24 +967,21 @@ func (a *App) formatRestartResult(ctx context.Context, chatID int64, res service
 	return text
 }
 
-func isPodkopCommand(cmd string) bool {
-	return strings.Contains(strings.ToLower(cmd), "podkop")
-}
-
-func (a *App) podkopIntegrationText(ctx context.Context) (string, bool) {
-	if !isPodkopCommand(a.cfg.RestartCmd) {
+func (a *App) backendIntegrationText(ctx context.Context) (string, bool) {
+	be, ok := a.managedBackend()
+	if !ok {
 		return "", false
 	}
 	secs, err := podkop.Sections(ctx)
 	if err != nil {
-		return "Не удалось прочитать конфиг podkop: " + err.Error(), true
+		return "Не удалось прочитать конфиг " + be.Name + ": " + err.Error(), true
 	}
 	if len(secs) == 0 {
-		return "🔗 В конфиге podkop нет секций.", true
+		return "🔗 В конфиге " + be.Name + " нет секций.", true
 	}
 
 	var sb strings.Builder
-	sb.WriteString("🔗 Списки в секциях Podkop:")
+	sb.WriteString("🔗 Списки в секциях " + be.Title + ":")
 	for _, s := range secs {
 		sb.WriteString("\n\n🗂 " + s.Name)
 		if s.ConnectionType != "" {
@@ -990,7 +996,7 @@ func (a *App) podkopIntegrationText(ctx context.Context) (string, bool) {
 	return sb.String(), true
 }
 
-// anyListBound reports whether podkop reads any list file at all.
+// anyListBound reports whether the backend reads any list file at all.
 func anyListBound(secs []podkop.Section) bool {
 	for _, s := range secs {
 		if len(s.DomainLists) > 0 || len(s.SubnetLists) > 0 {

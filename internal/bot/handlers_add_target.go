@@ -49,7 +49,7 @@ func (a *App) askAddTarget(ctx context.Context, b *tgbot.Bot, reply pickReply, o
 	if len(rows) == 0 {
 		a.logf(reply.chatID, "add_target no_sections type=%s", typeLabel(op.ListType))
 		a.sess.Delete(op.ID)
-		reply.send(ctx, b, "🔗 В конфиге podkop нет секций, куда можно добавить записи.",
+		reply.send(ctx, b, "🔗 В конфиге "+a.backendName()+" нет секций, куда можно добавить записи.",
 			a.backToMainMenuInlineKeyboard())
 		return
 	}

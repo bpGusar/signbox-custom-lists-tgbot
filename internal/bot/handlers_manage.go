@@ -89,9 +89,9 @@ func (a *App) showSections(ctx context.Context, b *tgbot.Bot, update *models.Upd
 		Text: menuBtnMainMenu, CallbackData: menuCbPrefix + "main_menu",
 	}})
 
-	text := "🗂 Секции Podkop\n\nВыберите секцию — дальше просмотр и выгрузка её списков."
+	text := "🗂 Секции " + a.backendTitle() + "\n\nВыберите секцию — дальше просмотр и выгрузка её списков."
 	if len(secs) == 1 && secs[0].Name == "" {
-		text = "🗂 Списки\n\nКонфиг podkop прочитать не удалось, поэтому доступна только пара файлов из настроек бота."
+		text = "🗂 Списки\n\nКонфиг " + a.backendName() + " прочитать не удалось, поэтому доступна только пара файлов из настроек бота."
 	}
 	a.answerAndEditMarkup(ctx, b, update, text, &models.InlineKeyboardMarkup{InlineKeyboard: rows})
 }
@@ -263,7 +263,7 @@ func (a *App) startBind(ctx context.Context, b *tgbot.Bot, update *models.Update
 	}
 	if s.Name == "" {
 		a.answerAndEditMarkup(ctx, b, update,
-			"ℹ️ Эта секция не из podkop — привязывать файл некуда.", a.backToSectionsInlineKeyboard())
+			"ℹ️ Эта секция не из "+a.backendName()+" — привязывать файл некуда.", a.backToSectionsInlineKeyboard())
 		return
 	}
 	a.logf(chatID, "bind_prompt section=%q type=%s", s.Name, typeLabel(act.typ))
@@ -274,16 +274,17 @@ func (a *App) startBind(ctx context.Context, b *tgbot.Bot, update *models.Update
 	}, a.suggestBindPath(s.Name, act.typ))
 }
 
-// showBindConfirm is the last screen before the podkop config is touched.
+// showBindConfirm is the last screen before the backend's config is touched.
 func (a *App) showBindConfirm(ctx context.Context, b *tgbot.Bot, reply pickReply, base PendingOp, path string) {
 	base.Kind = ActionBind
 	base.ChatID = reply.chatID
 	base.ListPath = path
 	opID := a.sess.Create(base)
 
+	name := a.backendName()
 	text := fmt.Sprintf(
-		"🔗 Привязать файл (%s) к секции «%s»:\n\n%s\n\nФайл будет создан, если его ещё нет, а путь добавлен в /etc/config/podkop. После этого podkop нужно перезапустить.",
-		typeLabel(base.ListType), base.Section, path)
+		"🔗 Привязать файл (%s) к секции «%s»:\n\n%s\n\nФайл будет создан, если его ещё нет, а путь добавлен в /etc/config/%s. После этого %s нужно перезапустить.",
+		typeLabel(base.ListType), base.Section, path, name, name)
 	if len(base.Values) > 0 {
 		text += fmt.Sprintf("\n\nПосле привязки вернёмся к вашим записям (%s).", pluralEntries(len(base.Values)))
 	}
@@ -310,7 +311,7 @@ func (a *App) promptBindPath(ctx context.Context, b *tgbot.Bot, update *models.U
 // handleBindPathText validates a hand-typed path and asks to confirm it.
 func (a *App) handleBindPathText(ctx context.Context, b *tgbot.Bot, chatID int64, op *PendingOp, text string) {
 	path := strings.TrimSpace(text)
-	if err := podkop.ValidatePath(path); err != nil {
+	if err := podkop.ValidateBindPath(op.ListType, path); err != nil {
 		// A rejected path is a typo, not a reason to unwind the flow.
 		a.sess.Await(chatID, awaitBindPath, op.ID)
 		a.sendPlain(ctx, b, chatID, "❌ "+err.Error()+"\n\nПришлите другой путь.", a.cancelKeyboard(op.ID))
@@ -325,7 +326,7 @@ func (a *App) handleBindPathText(ctx context.Context, b *tgbot.Bot, chatID int64
 	}, path)
 }
 
-// execBind writes the binding into podkop's config and creates the file.
+// execBind writes the binding into the backend's config and creates the file.
 func (a *App) execBind(ctx context.Context, b *tgbot.Bot, update *models.Update, op *PendingOp) {
 	if err := podkop.Bind(ctx, op.Section, op.ListType, op.ListPath); err != nil {
 		a.logf(op.ChatID, "bind_error section=%q type=%s path=%q err=%v", op.Section, typeLabel(op.ListType), op.ListPath, err)
@@ -335,14 +336,14 @@ func (a *App) execBind(ctx context.Context, b *tgbot.Bot, update *models.Update,
 	if err := lists.CreateFiles(op.ListPath); err != nil {
 		a.logf(op.ChatID, "bind_create_file_error path=%q err=%v", op.ListPath, err)
 		a.answerAndEditMarkup(ctx, b, update,
-			"⚠️ Путь добавлен в podkop, но файл создать не удалось: "+err.Error(),
+			"⚠️ Путь добавлен в "+a.backendName()+", но файл создать не удалось: "+err.Error(),
 			a.backToSectionsInlineKeyboard())
 		return
 	}
 	a.logf(op.ChatID, "bind_success section=%q type=%s path=%q values=%d",
 		op.Section, typeLabel(op.ListType), op.ListPath, len(op.Values))
 
-	// The binding only takes effect on the next podkop restart, which is
+	// The binding only takes effect on the next backend restart, which is
 	// exactly what the stale banner and its button are for.
 	_ = a.svc.MarkFilesChanged()
 

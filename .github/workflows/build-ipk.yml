@@ -1,4 +1,4 @@
-name: Build IPK packages
+name: Build packages
 
 on:
   push:
@@ -55,7 +55,7 @@ jobs:
           echo "Package version: $V"
 
   build:
-    name: ${{ matrix.arch }}
+    name: ${{ matrix.arch }} (${{ matrix.format }})
     needs: [test, version]
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -66,7 +66,7 @@ jobs:
     # Group is per-arch: matrix legs of the *same* run must stay parallel,
     # only the same leg across two different runs should race/cancel.
     concurrency:
-      group: build-${{ github.ref }}-${{ matrix.arch }}
+      group: build-${{ github.ref }}-${{ matrix.arch }}-${{ matrix.format }}
       cancel-in-progress: true
     strategy:
       fail-fast: false
@@ -76,42 +76,64 @@ jobs:
           - arm_cortex-a7_neon-vfpv4
           - mipsel_24kc
           - x86_64
+        format:
+          - ipk
+          - apk
+        include:
+          - format: ipk
+            openwrt: 24.10.5
+          - format: apk
+            openwrt: 25.12.3
 
     steps:
       - uses: actions/checkout@v4
 
       - uses: docker/setup-buildx-action@v3
 
-      - name: Build IPK (${{ matrix.arch }})
+      - name: Build ${{ matrix.format }} (${{ matrix.arch }}, OpenWrt ${{ matrix.openwrt }})
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile-ipk
-          tags: lst-signbox-lists-tgbot-ipk:${{ matrix.arch }}
+          tags: lst-signbox-lists-tgbot-${{ matrix.format }}:${{ matrix.arch }}
           build-args: |
             ARCH=${{ matrix.arch }}
-            OPENWRT_VERSION=24.10.5
+            OPENWRT_VERSION=${{ matrix.openwrt }}
             LISTS_TG_VERSION=${{ needs.version.outputs.version }}
             LISTS_TG_RELEASE=1
           load: true
-          cache-from: type=gha,scope=ipk-${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=ipk-${{ matrix.arch }}
+          cache-from: type=gha,scope=${{ matrix.format }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.format }}-${{ matrix.arch }}
 
-      - name: Extract IPK files
+      - name: Extract ${{ matrix.format }} files
+        env:
+          ARCH: ${{ matrix.arch }}
+          FORMAT: ${{ matrix.format }}
+          FULL: ${{ needs.version.outputs.version }}-r1
         run: |
-          cid=$(docker create lst-signbox-lists-tgbot-ipk:${{ matrix.arch }})
-          rm -rf "dist/ipk/${{ matrix.arch }}"
-          mkdir -p "dist/ipk/${{ matrix.arch }}" /tmp/ipk-extract
-          docker cp "$cid:/builder/bin/packages/." /tmp/ipk-extract/
+          cid=$(docker create "lst-signbox-lists-tgbot-${FORMAT}:${ARCH}")
+          out="dist/${FORMAT}/${ARCH}"
+          rm -rf "$out"
+          mkdir -p "$out" /tmp/pkg-extract
+          docker cp "$cid:/builder/bin/packages/." /tmp/pkg-extract/
           docker rm "$cid"
-          find /tmp/ipk-extract -name 'lst-signbox-lists-tgbot_*.ipk' -exec cp -f {} "dist/ipk/${{ matrix.arch }}/" \;
-          find /tmp/ipk-extract -name 'luci-app-lst-signbox-lists-tgbot_*.ipk' -exec cp -f {} "dist/ipk/${{ matrix.arch }}/" \;
-          ls -la "dist/ipk/${{ matrix.arch }}/"
+          if [ "$FORMAT" = ipk ]; then
+            find /tmp/pkg-extract -name 'lst-signbox-lists-tgbot_*.ipk' -exec cp -f {} "$out/" \;
+            find /tmp/pkg-extract -name 'luci-app-lst-signbox-lists-tgbot_*.ipk' -exec cp -f {} "$out/" \;
+          else
+            # apk names carry no architecture: rename them the ipk way so the
+            # release assets of different architectures do not collide.
+            cp -f "$(find /tmp/pkg-extract -name "lst-signbox-lists-tgbot-${FULL}.apk" -print -quit)" \
+              "$out/lst-signbox-lists-tgbot_${FULL}_${ARCH}.apk"
+            cp -f "$(find /tmp/pkg-extract -name "luci-app-lst-signbox-lists-tgbot-${FULL}.apk" -print -quit)" \
+              "$out/luci-app-lst-signbox-lists-tgbot_${FULL}_all.apk"
+          fi
+          ls -la "$out/"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ipk-${{ matrix.arch }}
-          path: dist/ipk/${{ matrix.arch }}/*.ipk
+          name: ${{ matrix.format }}-${{ matrix.arch }}
+          path: dist/${{ matrix.format }}/${{ matrix.arch }}/*.${{ matrix.format }}
           if-no-files-found: error
 
   release:
@@ -133,15 +155,24 @@ jobs:
         with:
           fetch-depth: 0
 
+      # The luci package is arch-independent and has the same name in every
+      # architecture's artifact, so each format is merged into its own folder.
       - name: Download IPK artifacts
         uses: actions/download-artifact@v4
         with:
           pattern: ipk-*
-          path: release
+          path: release/ipk
+          merge-multiple: true
+
+      - name: Download APK artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: apk-*
+          path: release/apk
           merge-multiple: true
 
       - name: Show release files
-        run: find release -name '*.ipk' | sort
+        run: find release \( -name '*.ipk' -o -name '*.apk' \) | sort
 
       - name: Create git tag
         run: |
@@ -155,13 +186,15 @@ jobs:
         with:
           tag_name: ${{ needs.version.outputs.tag }}
           name: ${{ needs.version.outputs.version }}
-          files: release/**/*.ipk
+          files: |
+            release/ipk/*.ipk
+            release/apk/*.apk
           draft: false
           prerelease: false
           generate_release_notes: true
 
   commit-dist:
-    name: Update dist/ipk in repo
+    name: Update dist in repo
     needs: [version, build]
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -178,33 +211,34 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Download IPK artifacts
+      - name: Download package artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: ipk-*
           path: artifacts
           merge-multiple: false
 
-      - name: Layout dist/ipk
+      - name: Layout dist
         run: |
-          rm -rf dist/ipk/*/
-          for arch in aarch64_cortex-a53 arm_cortex-a7_neon-vfpv4 mipsel_24kc x86_64; do
-            mkdir -p "dist/ipk/${arch}"
-            [ -d "artifacts/ipk-${arch}" ] && cp -f artifacts/ipk-${arch}/*.ipk "dist/ipk/${arch}/" || true
+          rm -rf dist/ipk/*/ dist/apk/*/
+          for format in ipk apk; do
+            for arch in aarch64_cortex-a53 arm_cortex-a7_neon-vfpv4 mipsel_24kc x86_64; do
+              mkdir -p "dist/${format}/${arch}"
+              [ -d "artifacts/${format}-${arch}" ] && cp -f artifacts/${format}-${arch}/*.${format} "dist/${format}/${arch}/" || true
+            done
           done
-          find dist/ipk -name '*.ipk' | sort
+          find dist \( -name '*.ipk' -o -name '*.apk' \) | sort
 
       - name: Update manifest
         run: |
           python3 scripts/update-manifest.py "${{ needs.version.outputs.version }}" 1 dist/manifest.json
 
-      - name: Commit dist/ipk
+      - name: Commit dist
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add dist/
           git diff --staged --quiet && echo "No changes" && exit 0
-          git commit -m "chore: update IPK packages ${{ needs.version.outputs.version }}"
+          git commit -m "chore: update packages ${{ needs.version.outputs.version }}"
           # The concurrency group above should prevent overlapping runs from
           # racing on this push, but rebase-and-retry once in case main moved
           # for an unrelated reason (e.g. a manual commit) between checkout

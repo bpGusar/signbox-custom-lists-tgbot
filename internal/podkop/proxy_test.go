@@ -204,11 +204,11 @@ func TestValidateProxyLink(t *testing.T) {
 }
 
 func TestGroupLatency(t *testing.T) {
-	prev := podkopRun
-	t.Cleanup(func() { podkopRun = prev })
+	prev := cliRun
+	t.Cleanup(func() { cliRun = prev })
 
-	podkopRun = func(_ context.Context, args ...string) (string, error) {
-		if strings.Join(args, " ") != "clash_api get_group_latency main" {
+	cliRun = func(_ context.Context, name string, args ...string) (string, error) {
+		if name != "podkop" || strings.Join(args, " ") != "clash_api get_group_latency main" {
 			t.Errorf("unexpected podkop args: %v", args)
 		}
 		return `{"main-1-out": 143, "main-2-out": 388, "main-3-out": 0}`, nil
@@ -224,10 +224,10 @@ func TestGroupLatency(t *testing.T) {
 }
 
 func TestGroupLatencyPlainOutput(t *testing.T) {
-	prev := podkopRun
-	t.Cleanup(func() { podkopRun = prev })
+	prev := cliRun
+	t.Cleanup(func() { cliRun = prev })
 
-	podkopRun = func(context.Context, ...string) (string, error) {
+	cliRun = func(context.Context, string, ...string) (string, error) {
 		return "main-1-out: 143ms\nmain-2-out = 388 ms\nвсё\n", nil
 	}
 	got, err := GroupLatency(context.Background(), "main")
@@ -241,20 +241,22 @@ func TestGroupLatencyPlainOutput(t *testing.T) {
 }
 
 func TestGroupLatencyErrors(t *testing.T) {
-	prev := podkopRun
-	t.Cleanup(func() { podkopRun = prev })
+	prev := cliRun
+	t.Cleanup(func() { cliRun = prev })
 
-	podkopRun = func(context.Context, ...string) (string, error) { return "", errors.New("no such command") }
+	cliRun = func(context.Context, string, ...string) (string, error) { return "", errors.New("no such command") }
 	if _, err := GroupLatency(context.Background(), "main"); err == nil {
 		t.Fatal("expected an error when podkop fails")
 	}
 
-	podkopRun = func(context.Context, ...string) (string, error) { return "ничего полезного", nil }
+	cliRun = func(context.Context, string, ...string) (string, error) {
+		return "ничего полезного", nil
+	}
 	if _, err := GroupLatency(context.Background(), "main"); err == nil {
 		t.Fatal("expected an error when nothing could be parsed")
 	}
 
-	podkopRun = func(context.Context, ...string) (string, error) { return "{}", nil }
+	cliRun = func(context.Context, string, ...string) (string, error) { return "{}", nil }
 	if _, err := GroupLatency(context.Background(), "main; reboot"); err == nil {
 		t.Fatal("expected a bad section name to be rejected")
 	}

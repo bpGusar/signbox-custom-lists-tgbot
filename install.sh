@@ -1,5 +1,6 @@
 #!/bin/sh
-# One-click installer for lst-signbox-lists-tgbot on OpenWrt 24.10+
+# One-click installer for lst-signbox-lists-tgbot on OpenWrt 24.10 (opkg, .ipk)
+# and 25.12+ (apk, .apk)
 #
 # Usage:
 #   sh <(wget -O - https://raw.githubusercontent.com/bpGusar/signbox-custom-lists-tgbot/main/install.sh)
@@ -8,7 +9,7 @@
 # Environment:
 #   LST_SIGNBOX_LISTS_TGBOT_INSTALL_LUCI=0 — skip LuCI package
 #   LST_SIGNBOX_LISTS_TGBOT_TOKEN          — set bot token in UCI after install
-#   LST_SIGNBOX_LISTS_TGBOT_REPO_URL       — fallback: base URL for dist/ipk (raw GitHub)
+#   LST_SIGNBOX_LISTS_TGBOT_REPO_URL       — fallback: base URL for dist/ipk or dist/apk (raw GitHub)
 
 set -eu
 
@@ -16,8 +17,9 @@ REPO_API="https://api.github.com/repos/bpGusar/signbox-custom-lists-tgbot/releas
 REPO_OWNER="bpGusar"
 REPO_NAME="signbox-custom-lists-tgbot"
 REPO_BRANCH="${LST_SIGNBOX_LISTS_TGBOT_REPO_BRANCH:-${LISTS_TG_REPO_BRANCH:-main}}"
-FALLBACK_REPO_URL="https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/${REPO_BRANCH}/dist/ipk"
 DIST_RAW_URL="https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/${REPO_BRANCH}/dist"
+PKG_MGR=""
+PKG_EXT=""
 DOWNLOAD_DIR="/tmp/lst-signbox-lists-tgbot-install"
 INSTALL_LUCI="${LST_SIGNBOX_LISTS_TGBOT_INSTALL_LUCI:-${LISTS_TG_INSTALL_LUCI:-1}}"
 RETRIES=3
@@ -38,8 +40,33 @@ need_root() {
 }
 
 need_openwrt() {
-	command -v opkg >/dev/null 2>&1 || die "opkg not found — this script is for OpenWrt"
 	[ -f /etc/openwrt_release ] || die "unsupported system"
+	# OpenWrt 25.12 replaced opkg with apk, and the packages are built for each.
+	if command -v apk >/dev/null 2>&1; then
+		PKG_MGR="apk"
+		PKG_EXT="apk"
+	elif command -v opkg >/dev/null 2>&1; then
+		PKG_MGR="opkg"
+		PKG_EXT="ipk"
+	else
+		die "neither apk nor opkg found — this script is for OpenWrt"
+	fi
+}
+
+pkg_update() {
+	if [ "$PKG_MGR" = "apk" ]; then
+		apk update
+	else
+		opkg update
+	fi
+}
+
+pkg_install() {
+	if [ "$PKG_MGR" = "apk" ]; then
+		apk add "$@"
+	else
+		opkg install "$@"
+	fi
 }
 
 detect_arch() {
@@ -123,9 +150,11 @@ manifest_package_name() {
 	local manifest="$1"
 	local package="$2"
 	local arch="$3"
+	local section="packages"
 	local template
 
-	template="$(grep -F "\"${package}\"" "$manifest" | sed -n 's/.*: *"\([^"]*\)".*/\1/p' | head -n 1)"
+	[ "$PKG_EXT" = "apk" ] && section="apk_packages"
+	template="$(sed -n "/\"${section}\"/,/^ *}/p" "$manifest" | grep -F "\"${package}\"" | sed -n 's/.*: *"\([^"]*\)".*/\1/p' | head -n 1)"
 	[ -n "$template" ] || return 1
 	printf '%s' "$template" | sed "s/\${ARCH}/${arch}/g"
 }
@@ -154,9 +183,9 @@ fetch_manifest() {
 	local manifest_url
 
 	case "$base_url" in
-		*/dist/ipk) manifest_url="${base_url%/ipk}/manifest.json" ;;
-		*/dist)     manifest_url="${base_url}/manifest.json" ;;
-		*)          manifest_url="${DIST_RAW_URL}/manifest.json" ;;
+		*/dist/ipk|*/dist/apk) manifest_url="${base_url%/*}/manifest.json" ;;
+		*/dist)                manifest_url="${base_url}/manifest.json" ;;
+		*)                     manifest_url="${DIST_RAW_URL}/manifest.json" ;;
 	esac
 
 	download_file "$manifest_url" "$dest" || return 1
@@ -179,9 +208,9 @@ release_package_names() {
 	release_ver="$(printf '%s' "$api_response" | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"v[^"]*"' | head -n 1 | sed 's/.*"v\([^"]*\)".*/\1/')"
 	[ -n "$release_ver" ] || return 1
 
-	PACKAGE_LISTS="lst-signbox-lists-tgbot_${release_ver}-r1_${arch}.ipk"
+	PACKAGE_LISTS="lst-signbox-lists-tgbot_${release_ver}-r1_${arch}.${PKG_EXT}"
 	if [ "$INSTALL_LUCI" = "1" ]; then
-		PACKAGE_LUCI="luci-app-lst-signbox-lists-tgbot_${release_ver}-r1_all.ipk"
+		PACKAGE_LUCI="luci-app-lst-signbox-lists-tgbot_${release_ver}-r1_all.${PKG_EXT}"
 	fi
 	return 0
 }
@@ -222,7 +251,7 @@ fetch_from_local() {
 	local base local_dir manifest_src
 
 	base="$(script_dir)"
-	local_dir="${base}/dist/ipk/${arch}"
+	local_dir="${base}/dist/${PKG_EXT}/${arch}"
 	manifest_src="${base}/dist/manifest.json"
 	[ -d "$local_dir" ] || return 1
 	[ -f "$manifest_src" ] || return 1
@@ -240,7 +269,7 @@ fetch_from_local() {
 
 fetch_from_raw() {
 	local arch="$1"
-	local base_url="${LST_SIGNBOX_LISTS_TGBOT_REPO_URL:-${LISTS_TG_REPO_URL:-$FALLBACK_REPO_URL}}"
+	local base_url="${LST_SIGNBOX_LISTS_TGBOT_REPO_URL:-${LISTS_TG_REPO_URL:-${DIST_RAW_URL}/${PKG_EXT}}}"
 
 	log "fallback: raw packages from ${base_url}/${arch}"
 	fetch_manifest "$arch" || return 1
@@ -270,7 +299,7 @@ fetch_packages() {
 		return 0
 	fi
 
-	die "no packages found for ${arch} — create a GitHub Release or build with: make ipk"
+	die "no packages found for ${arch} — create a GitHub Release or build with: make ${PKG_EXT}"
 }
 
 backup_current_config() {
@@ -310,6 +339,22 @@ opkg_install_tolerant() {
 	return 1
 }
 
+# apk keeps a changed conffile on its own (the new default goes to *.apk-new)
+# and exits 0, so it needs none of the opkg workaround above.
+pkg_install_file() {
+	local out
+
+	if [ "$PKG_MGR" = "opkg" ]; then
+		opkg_install_tolerant --force-reinstall --force-downgrade "$1"
+		return
+	fi
+	if out="$(apk add --allow-untrusted --force-reinstall "$1" 2>&1)"; then
+		return 0
+	fi
+	[ -n "$out" ] && printf '%s\n' "$out" >&2
+	return 1
+}
+
 # Downloading is the step that fails first on a router whose only fetcher is a
 # broken uclient-fetch, so pull curl (and the CA bundle it needs) in before the
 # downloads rather than after them.
@@ -318,8 +363,8 @@ prepare_download_tools() {
 		return 0
 	fi
 	log "curl not found, installing it for downloads"
-	opkg update >/dev/null 2>&1 || true
-	opkg install ca-bundle curl >/dev/null 2>&1 || true
+	pkg_update >/dev/null 2>&1 || true
+	pkg_install ca-bundle curl >/dev/null 2>&1 || true
 	if ! command -v curl >/dev/null 2>&1; then
 		log "curl unavailable, falling back to wget"
 	fi
@@ -327,26 +372,26 @@ prepare_download_tools() {
 }
 
 install_packages() {
-	local arch="$1" lists_ipk luci_ipk
+	local arch="$1" lists_pkg luci_pkg
 
 	log "updating package lists"
-	opkg update >/dev/null 2>&1 || true
-	opkg install ca-bundle >/dev/null 2>&1 || true
+	pkg_update >/dev/null 2>&1 || true
+	pkg_install ca-bundle >/dev/null 2>&1 || true
 
 	if [ "$INSTALL_LUCI" = "1" ]; then
-		opkg install luci-base luci-compat >/dev/null 2>&1 || true
+		pkg_install luci-base luci-compat >/dev/null 2>&1 || true
 	fi
 
-	log "installing lst-signbox-lists-tgbot (${arch})"
-	lists_ipk="${DOWNLOAD_DIR}/${PACKAGE_LISTS}"
-	[ -f "$lists_ipk" ] || die "lst-signbox-lists-tgbot package not found"
-	opkg_install_tolerant --force-reinstall --force-downgrade "$lists_ipk" || die "opkg install failed for lst-signbox-lists-tgbot"
+	log "installing lst-signbox-lists-tgbot (${arch}, ${PKG_MGR})"
+	lists_pkg="${DOWNLOAD_DIR}/${PACKAGE_LISTS}"
+	[ -f "$lists_pkg" ] || die "lst-signbox-lists-tgbot package not found"
+	pkg_install_file "$lists_pkg" || die "${PKG_MGR} install failed for lst-signbox-lists-tgbot"
 
 	if [ "$INSTALL_LUCI" = "1" ]; then
 		log "installing LuCI app"
-		luci_ipk="${DOWNLOAD_DIR}/${PACKAGE_LUCI}"
-		[ -f "$luci_ipk" ] || die "luci-app-lst-signbox-lists-tgbot package not found"
-		opkg_install_tolerant --force-reinstall --force-downgrade "$luci_ipk" || die "opkg install failed for luci-app-lst-signbox-lists-tgbot"
+		luci_pkg="${DOWNLOAD_DIR}/${PACKAGE_LUCI}"
+		[ -f "$luci_pkg" ] || die "luci-app-lst-signbox-lists-tgbot package not found"
+		pkg_install_file "$luci_pkg" || die "${PKG_MGR} install failed for luci-app-lst-signbox-lists-tgbot"
 		rm -f /tmp/luci-indexcache /tmp/luci-modulecache 2>/dev/null || true
 	fi
 }

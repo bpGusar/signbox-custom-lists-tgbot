@@ -59,10 +59,10 @@ const (
 // has been read.
 func (a *App) showProxyUploadHint(ctx context.Context, b *tgbot.Bot, update *models.Update, chatID int64) {
 	a.sess.ArmProxyFile(chatID)
-	a.editCallbackMessageMarkup(ctx, b, update, proxyUploadHintText(), a.backToMainMenuInlineKeyboard())
+	a.editCallbackMessageMarkup(ctx, b, update, proxyUploadHintText(a.backendName()), a.backToMainMenuInlineKeyboard())
 }
 
-func proxyUploadHintText() string {
+func proxyUploadHintText(backend string) string {
 	limits := proxylink.DefaultLimits()
 	return btnProxyLinks + "\n\n" +
 		"📎 Пришлите файл со ссылками на конфиги — обычным документом в этот чат — " +
@@ -77,7 +77,7 @@ func proxyUploadHintText() string {
 		"1. бот покажет, что нашёл\n" +
 		"2. спросит порог задержки\n" +
 		"3. проверит ссылки и покажет отчёт\n" +
-		"4. предложит записать прошедшие в секцию podkop\n\n" +
+		"4. предложит записать прошедшие в секцию " + backend + "\n\n" +
 		"Жду файл или список."
 }
 
@@ -642,7 +642,7 @@ func (a *App) showProxyReport(ctx context.Context, b *tgbot.Bot, imp *ProxyImpor
 	} else {
 		rows := a.proxySectionRows(ctx, imp.ID)
 		if len(rows) == 0 {
-			full += "\n\n🔗 В podkop нет секции, которая принимает список ссылок."
+			full += "\n\n🔗 В " + a.backendName() + " нет секции, которая принимает список ссылок."
 			kb = a.backToMainMenuInlineKeyboard()
 		} else {
 			full = full + "\n\nВ какую секцию записать?"
@@ -784,7 +784,8 @@ func (a *App) handleProxySectionPick(ctx context.Context, b *tgbot.Bot, update *
 	a.showProxyWritePreview(ctx, b, update, imp)
 }
 
-// showProxyConvertConfirm asks before changing how podkop picks its outbound:
+// showProxyConvertConfirm asks before changing how podkop picks its outbound
+// (forkop sections never need it):
 // a section of type URL carries one link, and a list needs URLTest.
 func (a *App) showProxyConvertConfirm(ctx context.Context, b *tgbot.Bot, update *models.Update, imp *ProxyImport, token string) {
 	s, err := a.findProxySection(ctx, token)
@@ -840,7 +841,7 @@ func (a *App) proxyBackToReportKeyboard(impID string) *models.InlineKeyboardMark
 	}
 }
 
-// showProxyWritePreview is the last screen before podkop's config is touched:
+// showProxyWritePreview is the last screen before the backend's config is touched:
 // what is there now, what would be there after.
 func (a *App) showProxyWritePreview(ctx context.Context, b *tgbot.Bot, update *models.Update, imp *ProxyImport) {
 	current, ok := a.sess.GetImport(imp.ID)
@@ -928,18 +929,19 @@ func (a *App) execProxyWrite(ctx context.Context, b *tgbot.Bot, update *models.U
 	}
 
 	_ = a.svc.MarkFilesChanged()
-	a.answerAndEditMarkup(ctx, b, update, msg+"\n\nЧтобы podkop подхватил ссылки, его нужно перезапустить.",
+	name := a.backendName()
+	a.answerAndEditMarkup(ctx, b, update, msg+"\n\nЧтобы "+name+" подхватил ссылки, его нужно перезапустить.",
 		&models.InlineKeyboardMarkup{
 			InlineKeyboard: [][]models.InlineKeyboardButton{
-				{{Text: "📡 Задержки в podkop", CallbackData: proxyCbPrefix + imp.ID + ":" + cbProxyLatency}},
+				{{Text: "📡 Задержки в " + name, CallbackData: proxyCbPrefix + imp.ID + ":" + cbProxyLatency}},
 				{{Text: menuBtnMainMenu, CallbackData: menuCbPrefix + "main_menu"}},
 			},
 		})
 	a.maybeAutoRestart(imp.ChatID, b)
 }
 
-// showGroupLatency asks podkop what the links measure now that they are live —
-// the only number that is measured the way podkop itself measures.
+// showGroupLatency asks the backend what the links measure now that they are
+// live — the only number that is measured the way the backend itself measures.
 func (a *App) showGroupLatency(ctx context.Context, b *tgbot.Bot, update *models.Update, imp *ProxyImport) {
 	if imp.Section == "" {
 		a.answerAndEditMarkup(ctx, b, update, "⏳ Секция не выбрана.", a.backToMainMenuInlineKeyboard())
@@ -948,9 +950,10 @@ func (a *App) showGroupLatency(ctx context.Context, b *tgbot.Bot, update *models
 	latency, err := podkop.GroupLatency(ctx, imp.Section)
 	if err != nil {
 		a.logf(imp.ChatID, "proxy_group_latency error section=%q err=%v", imp.Section, err)
+		name := a.backendName()
 		a.answerAndEditMarkup(ctx, b, update,
-			"ℹ️ Не удалось получить задержки от podkop: "+err.Error()+
-				"\n\nОбычно это значит, что podkop ещё не перезапущен с новыми ссылками.",
+			"ℹ️ Не удалось получить задержки от "+name+": "+err.Error()+
+				"\n\nОбычно это значит, что "+name+" ещё не перезапущен с новыми ссылками.",
 			a.backToMainMenuInlineKeyboard())
 		return
 	}
@@ -962,7 +965,7 @@ func (a *App) showGroupLatency(ctx context.Context, b *tgbot.Bot, update *models
 	sortByValue(tags, latency)
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("📡 Задержки в секции «%s» (замер podkop):\n", imp.Section))
+	sb.WriteString(fmt.Sprintf("📡 Задержки в секции «%s» (замер %s):\n", imp.Section, a.backendName()))
 	for _, tag := range tags {
 		sb.WriteString(fmt.Sprintf("\n• %d мс — %s", latency[tag], tag))
 	}
@@ -978,7 +981,7 @@ func sortByValue(keys []string, m map[string]int) {
 	}
 }
 
-// forUCI renders the links the way they must be written into podkop's config.
+// forUCI renders the links the way they must be written into the backend's config.
 func forUCI(links []proxylink.Link) []string {
 	out := make([]string, 0, len(links))
 	for _, l := range links {

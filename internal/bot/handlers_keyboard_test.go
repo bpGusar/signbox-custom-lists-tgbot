@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"lst-signbox-lists-tgbot/internal/config"
+	"lst-signbox-lists-tgbot/internal/podkop"
 )
 
 func keyboardTexts(t *testing.T, opID string, newVals, active, disabled []string) []string {
@@ -116,7 +117,7 @@ func TestMainMenuInlineKeyboard_baseActions(t *testing.T) {
 	if !containsAll(texts, btnManage, btnProxyLinks) {
 		t.Fatalf("expected the manage and proxy links buttons, got %v", texts)
 	}
-	if !containsNone(texts, menuBtnMainMenu, menuBtnCheckPodkop, menuBtnSettings) {
+	if !containsNone(texts, menuBtnMainMenu, menuBtnCheckBackend(podkop.Podkop), menuBtnSettings) {
 		t.Fatalf("unexpected buttons in inline menu: %v", texts)
 	}
 }
@@ -136,7 +137,7 @@ func TestMainMenuInlineKeyboard_withSettings(t *testing.T) {
 	if !containsAll(texts, menuBtnSettings) {
 		t.Fatalf("expected settings button, got %v", texts)
 	}
-	if !containsNone(texts, app.menuBtnRestart(), menuBtnCheckPodkop) {
+	if !containsNone(texts, app.menuBtnRestart(), menuBtnCheckBackend(podkop.Podkop)) {
 		t.Fatalf("restart and podkop should be in settings, not main menu: %v", texts)
 	}
 }
@@ -164,7 +165,7 @@ func TestSettingsMenuInlineKeyboard_withRestartAndPodkop(t *testing.T) {
 	app := &App{cfg: &config.Config{
 		RestartCmd:   "/etc/init.d/podkop restart",
 		ServiceLabel: "Podkop",
-	}}
+	}, detectBackend: func() (podkop.Backend, error) { return podkop.Podkop, nil }}
 	kb := app.settingsMenuInlineKeyboard()
 	var texts []string
 	for _, row := range kb.InlineKeyboard {
@@ -172,7 +173,7 @@ func TestSettingsMenuInlineKeyboard_withRestartAndPodkop(t *testing.T) {
 			texts = append(texts, btn.Text)
 		}
 	}
-	if !containsAll(texts, app.menuBtnRestart(), app.menuBtnAutoRestart(), menuBtnCheckPodkop, menuBtnMainMenu) {
+	if !containsAll(texts, app.menuBtnRestart(), app.menuBtnAutoRestart(), menuBtnCheckBackend(podkop.Podkop), menuBtnMainMenu) {
 		t.Fatalf("expected restart, auto restart, podkop and main menu buttons, got %v", texts)
 	}
 }
@@ -192,7 +193,7 @@ func TestSettingsMenuInlineKeyboard_singBoxOnlyRestart(t *testing.T) {
 	if !containsAll(texts, app.menuBtnRestart(), app.menuBtnAutoRestart(), menuBtnMainMenu) {
 		t.Fatalf("expected restart, auto restart and main menu buttons, got %v", texts)
 	}
-	if !containsNone(texts, menuBtnCheckPodkop) {
+	if !containsNone(texts, menuBtnCheckBackend(podkop.Podkop)) {
 		t.Fatalf("podkop check should not appear for sing-box, got %v", texts)
 	}
 }

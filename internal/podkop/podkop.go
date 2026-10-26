@@ -1,5 +1,5 @@
-// Package podkop reads the podkop UCI config: which routing sections exist and
-// which list files each of them is fed from.
+// Package podkop reads the podkop or forkop UCI config: which routing sections
+// exist and which list files each of them is fed from.
 package podkop
 
 import (
@@ -15,8 +15,9 @@ import (
 // /etc/config/podkop. The global "settings" section is not one of these.
 type Section struct {
 	Name string
-	// ConnectionType is podkop's own label for what the section does
-	// ("proxy", "exclusion", …); empty when the option is unset.
+	// ConnectionType is the backend's own label for what the section does:
+	// podkop's connection_type ("proxy", "exclusion", …) or forkop's action
+	// ("connection", "block", …); empty when the option is unset.
 	ConnectionType string
 	// DomainLists and SubnetLists are the paths from local_domain_lists and
 	// local_subnet_lists. Both are UCI lists, so a section can be fed from
@@ -24,7 +25,8 @@ type Section struct {
 	DomainLists []string
 	SubnetLists []string
 	// ProxyConfigType is how the section gets its outbound: url, selector,
-	// urltest or outbound.
+	// urltest or outbound. A forkop connection section always keeps a
+	// selector list.
 	ProxyConfigType string
 	// ProxyLinks is the option matching ProxyConfigType — urltest_proxy_links
 	// or selector_proxy_links. Both are UCI lists.
@@ -41,7 +43,7 @@ func (s Section) Lists(t lists.EntryType) []string {
 	return s.SubnetLists
 }
 
-// OptionName is the UCI option a list of the given type lives in.
+// OptionName is the podkop UCI option a list of the given type lives in.
 func OptionName(t lists.EntryType) string {
 	if t == lists.TypeDomain {
 		return "local_domain_lists"
@@ -50,11 +52,11 @@ func OptionName(t lists.EntryType) string {
 }
 
 var (
-	// sectionDecl matches the lines of "uci show podkop" that declare a
+	// sectionDecl matches the lines of "uci show <config>" that declare a
 	// routing section.
-	sectionDecl = regexp.MustCompile(`^podkop\.([A-Za-z0-9_]+)=section$`)
-	// optionLine matches "podkop.<section>.<option>=<value>".
-	optionLine = regexp.MustCompile(`^podkop\.([A-Za-z0-9_]+)\.([A-Za-z0-9_]+)=(.*)$`)
+	sectionDecl = regexp.MustCompile(`^([a-z]+)\.([A-Za-z0-9_]+)=section$`)
+	// optionLine matches "<config>.<section>.<option>=<value>".
+	optionLine = regexp.MustCompile(`^([a-z]+)\.([A-Za-z0-9_]+)\.([A-Za-z0-9_]+)=(.*)$`)
 	// quoted picks the individual values out of a UCI list, which uci prints
 	// as quoted words on one line.
 	quoted = regexp.MustCompile(`'([^']*)'`)
@@ -63,19 +65,43 @@ var (
 	sectionNameRe = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
 )
 
-// Available reports whether this router has a podkop config to read at all.
+// forkopConnection is forkop's action for a section that routes through
+// proxies; the older names it still accepts are folded into it.
+const forkopConnection = "connection"
+
+func normalizeForkopAction(action string) string {
+	switch action {
+	case "proxy", "outbound", "vpn":
+		return forkopConnection
+	}
+	return action
+}
+
+// Available reports whether this router has a backend config to read at all.
 func Available(ctx context.Context) bool {
-	_, err := run(ctx, "show", "podkop")
+	b, err := detect()
+	if err != nil {
+		return false
+	}
+	_, err = run(ctx, "show", b.Name)
 	return err == nil
 }
 
-// Sections lists podkop's routing sections in config order, each with the list
-// files bound to it. It reads the whole config in one call, because spawning a
-// uci process per option is noticeable on the routers this runs on.
+// Sections lists the backend's routing sections in config order, each with
+// the list files bound to it. It reads the whole config in one call, because
+// spawning a uci process per option is noticeable on the routers this runs on.
 func Sections(ctx context.Context) ([]Section, error) {
-	out, err := run(ctx, "show", "podkop")
+	b, err := detect()
 	if err != nil {
-		return nil, fmt.Errorf("uci show podkop: %w", err)
+		return nil, err
+	}
+	return sectionsOf(ctx, b)
+}
+
+func sectionsOf(ctx context.Context, b Backend) ([]Section, error) {
+	out, err := run(ctx, "show", b.Name)
+	if err != nil {
+		return nil, fmt.Errorf("uci show %s: %w", b.Name, err)
 	}
 
 	var sections []Section
@@ -103,41 +129,62 @@ func Sections(ctx context.Context) ([]Section, error) {
 
 		line = strings.TrimSpace(line)
 		if m := sectionDecl.FindStringSubmatch(line); m != nil {
-			index[m[1]] = len(sections)
-			sections = append(sections, Section{Name: m[1]})
+			if m[1] != b.Name {
+				continue
+			}
+			index[m[2]] = len(sections)
+			sections = append(sections, Section{Name: m[2]})
 			continue
 		}
 
 		m := optionLine.FindStringSubmatch(line)
-		if m == nil {
+		if m == nil || m[1] != b.Name {
 			continue
 		}
-		i, ok := index[m[1]]
+		i, ok := index[m[2]]
 		if !ok {
 			// An option of the global "settings" section, or of one declared
 			// after its own options, which uci never does.
 			continue
 		}
-		switch m[2] {
-		case "connection_type":
-			sections[i].ConnectionType = firstValue(parseValues(m[3]))
-		case OptionName(lists.TypeDomain):
-			sections[i].DomainLists = parseValues(m[3])
-		case OptionName(lists.TypeIP):
-			sections[i].SubnetLists = parseValues(m[3])
-		case "proxy_config_type":
-			sections[i].ProxyConfigType = firstValue(parseValues(m[3]))
-		case "proxy_string":
-			sections[i].ProxyString = firstValue(parseValues(m[3]))
-		case urltestLinksOption, selectorLinksOption:
+		option, value := m[3], m[4]
+		switch {
+		case option == "connection_type" && !b.IsForkop():
+			sections[i].ConnectionType = firstValue(parseValues(value))
+		case option == "action" && b.IsForkop():
+			sections[i].ConnectionType = normalizeForkopAction(firstValue(parseValues(value)))
+		case option == OptionName(lists.TypeDomain) && !b.IsForkop():
+			sections[i].DomainLists = parseValues(value)
+		case option == OptionName(lists.TypeIP) && !b.IsForkop():
+			sections[i].SubnetLists = parseValues(value)
+		case option == forkopListsOption && b.IsForkop():
+			for _, path := range parseValues(value) {
+				// URLs are downloaded by forkop itself; only files are the bot's.
+				if !strings.HasPrefix(path, "/") {
+					continue
+				}
+				if listFileType(path) == lists.TypeIP {
+					sections[i].SubnetLists = append(sections[i].SubnetLists, path)
+				} else {
+					sections[i].DomainLists = append(sections[i].DomainLists, path)
+				}
+			}
+		case option == "proxy_config_type" && !b.IsForkop():
+			sections[i].ProxyConfigType = firstValue(parseValues(value))
+		case option == "proxy_string" && !b.IsForkop():
+			sections[i].ProxyString = firstValue(parseValues(value))
+		case option == urltestLinksOption, option == selectorLinksOption:
 			if linksByOption[i] == nil {
 				linksByOption[i] = make(map[string][]string, 2)
 			}
-			linksByOption[i][m[2]] = parseValues(m[3])
+			linksByOption[i][option] = parseValues(value)
 		}
 	}
 
 	for i := range sections {
+		if b.IsForkop() && sections[i].ConnectionType == forkopConnection {
+			sections[i].ProxyConfigType = ProxyTypeSelector
+		}
 		sections[i].ProxyLinks = linksByOption[i][ProxyLinksOption(sections[i].ProxyConfigType)]
 	}
 	return sections, nil
@@ -175,8 +222,8 @@ func firstValue(v []string) string {
 	return v[0]
 }
 
-// Bind adds path to the section's list option and commits, so podkop picks the
-// file up on its next restart.
+// Bind adds path to the section's list option and commits, so the backend
+// picks the file up on its next restart.
 func Bind(ctx context.Context, section string, t lists.EntryType, path string) error {
 	if !sectionNameRe.MatchString(section) {
 		return fmt.Errorf("некорректное имя секции: %q", section)
@@ -184,23 +231,34 @@ func Bind(ctx context.Context, section string, t lists.EntryType, path string) e
 	if err := ValidatePath(path); err != nil {
 		return err
 	}
-	if _, err := run(ctx, "add_list", "podkop."+section+"."+OptionName(t)+"="+path); err != nil {
+	b, err := detect()
+	if err != nil {
+		return err
+	}
+	if err := validateForBackend(b, t, path); err != nil {
+		return err
+	}
+	if _, err := run(ctx, "add_list", b.Name+"."+section+"."+listOption(b, t)+"="+path); err != nil {
 		return fmt.Errorf("uci add_list: %w", err)
 	}
-	if _, err := run(ctx, "commit", "podkop"); err != nil {
-		return fmt.Errorf("uci commit podkop: %w", err)
+	return commit(ctx, b)
+}
+
+func commit(ctx context.Context, b Backend) error {
+	if _, err := run(ctx, "commit", b.Name); err != nil {
+		return fmt.Errorf("uci commit %s: %w", b.Name, err)
 	}
 	return nil
 }
 
 // pathRe is what a list path may look like. The path reaches this code from a
-// chat message and ends up both in podkop's config and as a file the bot
+// chat message and ends up both in the backend's config and as a file the bot
 // writes to, so the charset is kept to what a list file plausibly needs.
 var pathRe = regexp.MustCompile(`^(/[A-Za-z0-9_.-]+)+$`)
 
 const maxPathLen = 200
 
-// ValidatePath rejects anything that should never reach the podkop config.
+// ValidatePath rejects anything that should never reach the backend's config.
 func ValidatePath(path string) error {
 	switch {
 	case path == "":

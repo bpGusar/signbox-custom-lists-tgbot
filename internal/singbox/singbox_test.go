@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"lst-signbox-lists-tgbot/internal/podkop"
 	"lst-signbox-lists-tgbot/internal/proxylink"
 )
 
@@ -21,8 +22,10 @@ type fakeShell struct {
 
 func (f *fakeShell) install(t *testing.T, facade bool) {
 	t.Helper()
-	prevRun, prevStat := runner, fileExists
-	t.Cleanup(func() { runner, fileExists = prevRun, prevStat })
+	prevRun, prevStat, prevDetect := runner, fileExists, detectBackend
+	t.Cleanup(func() { runner, fileExists, detectBackend = prevRun, prevStat, prevDetect })
+
+	detectBackend = func() (podkop.Backend, error) { return podkop.Podkop, nil }
 
 	fileExists = func(string) bool { return facade }
 	runner = func(_ context.Context, name string, args []string, stdin string) (string, error) {
@@ -86,7 +89,7 @@ func TestBuildOutboundsTakesTagsFromJSON(t *testing.T) {
 		"vless://uuid@1.2.3.4:8443#⚡ Первый узел",
 		"hysteria2://pass@5.6.7.8:30443#⚡ Второй",
 	)
-	outbounds, tags, err := buildOutbounds(context.Background(), links)
+	outbounds, tags, err := buildOutbounds(context.Background(), toolchainFor(podkop.Podkop), links)
 	if err != nil {
 		t.Fatalf("buildOutbounds: %v", err)
 	}
@@ -122,7 +125,7 @@ func TestBuildOutboundsRejectsBadOutput(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			f := sh
 			f.install(t, true)
-			if _, _, err := buildOutbounds(context.Background(), links); err == nil {
+			if _, _, err := buildOutbounds(context.Background(), toolchainFor(podkop.Podkop), links); err == nil {
 				t.Fatal("expected an error")
 			}
 		})

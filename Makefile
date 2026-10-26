@@ -6,9 +6,10 @@ LDFLAGS := -s -w \
 	-X lst-signbox-lists-tgbot/internal/version.Version=$(VERSION) \
 	-X lst-signbox-lists-tgbot/internal/version.Release=$(RELEASE)
 
-.PHONY: build test tidy clean cross ipk ipk-aarch64
+.PHONY: build test tidy clean cross ipk ipk-aarch64 apk apk-aarch64 packages
 
 OPENWRT_VERSION ?= 24.10.5
+OPENWRT_APK_VERSION ?= 25.12.3
 IPK_TARGETS ?= aarch64_cortex-a53 arm_cortex-a7_neon-vfpv4 mipsel_24kc x86_64
 
 build:
@@ -39,3 +40,12 @@ ipk:
 
 ipk-aarch64:
 	OPENWRT_VERSION=$(OPENWRT_VERSION) TARGETS=aarch64_cortex-a53 ./scripts/build-ipk.sh
+
+# Build OpenWrt 25.12+ .apk packages (requires Docker)
+apk:
+	OPENWRT_VERSION=$(OPENWRT_APK_VERSION) TARGETS="$(IPK_TARGETS)" ./scripts/build-ipk.sh
+
+apk-aarch64:
+	OPENWRT_VERSION=$(OPENWRT_APK_VERSION) TARGETS=aarch64_cortex-a53 ./scripts/build-ipk.sh
+
+packages: ipk apk
