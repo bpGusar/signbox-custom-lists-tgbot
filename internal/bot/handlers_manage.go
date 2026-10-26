@@ -302,10 +302,11 @@ func (a *App) handleBindPathText(ctx context.Context, b *tgbot.Bot, chatID int64
 	}
 	a.sess.Delete(op.ID)
 	a.showBindConfirm(ctx, b, a.replyTo(nil, chatID), PendingOp{
-		ChatID:   chatID,
-		Section:  op.Section,
-		ListType: op.ListType,
-		Values:   op.Values,
+		ChatID:          chatID,
+		Section:         op.Section,
+		ListType:        op.ListType,
+		Values:          op.Values,
+		ValueCategories: op.ValueCategories,
 	}, path)
 }
 

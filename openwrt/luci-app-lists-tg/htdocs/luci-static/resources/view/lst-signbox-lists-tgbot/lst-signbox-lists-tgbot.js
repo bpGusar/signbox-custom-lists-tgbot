@@ -14,6 +14,7 @@ var UPGRADE_POLL_INTERVAL = 2;
 var UCI_PACKAGE = 'lst-signbox-lists-tgbot';
 var UCI_SECTION = 'main';
 var UCI_LOG_AUTO_REFRESH = 'log_auto_refresh';
+var RESTART_CMD_DEFAULT = '/etc/init.d/$([ -x /etc/init.d/forkop ] && echo forkop || echo podkop) restart';
 
 var logTextarea = null;
 var pollLogFn = null;
@@ -446,16 +447,10 @@ return view.extend({
 		o.placeholder = '123456:ABC...';
 		o.rmempty = false;
 
-		o = s.option(form.Value, 'restart_cmd', _('Restart command'));
-		o.default = '/etc/init.d/podkop restart';
-		o.placeholder = '/etc/init.d/podkop restart';
-		o.description = _('A podkop or forkop command is applied to whichever of them is installed: the bot detects it on its own.');
-		o.rmempty = false;
-
-		o = s.option(form.Value, 'service_label', _('Service label'));
-		o.default = 'podkop';
-		o.placeholder = 'podkop';
-		o.rmempty = false;
+		o = s.option(form.DynamicList, 'restart_cmd', _('Restart commands'));
+		o.default = [ RESTART_CMD_DEFAULT ];
+		o.placeholder = RESTART_CMD_DEFAULT;
+		o.description = _('Run one after another when the service is restarted; the first failing command stops the rest. The default restarts whichever of podkop and forkop is installed.');
 
 		o = s.option(form.Flag, 'auto_restart', _('Restart service after list changes'));
 		o.default = '1';

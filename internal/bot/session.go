@@ -46,6 +46,10 @@ type PendingOp struct {
 	// Category is the target category for adds and moves, or the subject of a
 	// category card.
 	Category string
+	// ValueCategories is the category each value was headed with in the
+	// message ("// #cat: name"), keyed by the lower-cased value. When set it
+	// overrides Category for the values it covers.
+	ValueCategories map[string]string
 	// Origin is the category values are being moved out of, for reporting.
 	Origin  map[string]string
 	Created time.Time

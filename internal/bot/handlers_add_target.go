@@ -82,10 +82,11 @@ func (a *App) handleAddSectionPick(ctx context.Context, b *tgbot.Bot, update *mo
 		// exists instead of making the user paste the list again.
 		a.sess.Delete(op.ID)
 		a.showBindConfirm(ctx, b, a.replyTo(update, chatID), PendingOp{
-			ChatID:   chatID,
-			Section:  s.Name,
-			ListType: op.ListType,
-			Values:   op.Values,
+			ChatID:          chatID,
+			Section:         s.Name,
+			ListType:        op.ListType,
+			Values:          op.Values,
+			ValueCategories: op.ValueCategories,
 		}, suggestBindPath(s.Name, op.ListType))
 		return
 	}
@@ -141,6 +142,7 @@ func (a *App) showAddActions(ctx context.Context, b *tgbot.Bot, reply pickReply,
 	}
 
 	next := a.reissue(op, func(o *PendingOp) {
+		o.Kind = ActionAdd
 		o.Section = tgt.Section
 		o.ListPath = tgt.Path
 	})
@@ -149,6 +151,9 @@ func (a *App) showAddActions(ctx context.Context, b *tgbot.Bot, reply pickReply,
 
 	msg := note + targetLine(tgt) + "\n\n" +
 		buildListInputMessage(typeLabel(tgt.Type), op.Values, validNew, validActive, validDisabled)
+	if line := categoriesLine(op, op.Values); line != "" {
+		msg += "\n\n" + line
+	}
 	if others := a.sharedWith(ctx, tgt); len(others) > 0 {
 		msg += "\n\nℹ️ Этот файл используют и другие секции: " + strings.Join(others, ", ")
 	}

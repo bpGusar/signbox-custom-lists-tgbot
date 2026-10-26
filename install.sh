@@ -26,8 +26,7 @@ RETRIES=3
 DOWNLOAD_TIMEOUT=60
 PREV_ENABLED=""
 PREV_TOKEN=""
-PREV_RESTART_CMD=""
-PREV_SERVICE_LABEL=""
+PREV_RESTART_CMDS=""
 PREV_STATE_PATH=""
 
 log() { printf '\033[32;1m%s\033[0m\n' "$*" >&2; }
@@ -303,8 +302,8 @@ fetch_packages() {
 backup_current_config() {
 	PREV_ENABLED="$(uci -q get lst-signbox-lists-tgbot.main.enabled || uci -q get lists-tg.main.enabled || true)"
 	PREV_TOKEN="$(uci -q get lst-signbox-lists-tgbot.main.token || uci -q get lists-tg.main.token || true)"
-	PREV_RESTART_CMD="$(uci -q get lst-signbox-lists-tgbot.main.restart_cmd || uci -q get lists-tg.main.restart_cmd || true)"
-	PREV_SERVICE_LABEL="$(uci -q get lst-signbox-lists-tgbot.main.service_label || uci -q get lists-tg.main.service_label || true)"
+	PREV_RESTART_CMDS="$(uci -q show lst-signbox-lists-tgbot.main.restart_cmd || uci -q show lists-tg.main.restart_cmd || true)"
+	PREV_RESTART_CMDS="${PREV_RESTART_CMDS#*=}"
 	PREV_STATE_PATH="$(uci -q get lst-signbox-lists-tgbot.main.state_path || uci -q get lists-tg.main.state_path || true)"
 }
 
@@ -412,12 +411,16 @@ configure_token() {
 
 	uci -q delete lst-signbox-lists-tgbot.main.domain_list && changed=1
 	uci -q delete lst-signbox-lists-tgbot.main.ip_list && changed=1
-	if [ -n "$PREV_RESTART_CMD" ]; then
-		uci set "lst-signbox-lists-tgbot.main.restart_cmd=${PREV_RESTART_CMD}"
-		changed=1
+	uci -q delete lst-signbox-lists-tgbot.main.service_label && changed=1
+	if [ "$PREV_RESTART_CMDS" = "'/etc/init.d/podkop restart'" ]; then
+		PREV_RESTART_CMDS="'"'/etc/init.d/$([ -x /etc/init.d/forkop ] && echo forkop || echo podkop) restart'"'"
 	fi
-	if [ -n "$PREV_SERVICE_LABEL" ]; then
-		uci set "lst-signbox-lists-tgbot.main.service_label=${PREV_SERVICE_LABEL}"
+	if [ -n "$PREV_RESTART_CMDS" ]; then
+		eval "set -- $PREV_RESTART_CMDS"
+		uci -q delete lst-signbox-lists-tgbot.main.restart_cmd || true
+		for cmd in "$@"; do
+			uci add_list "lst-signbox-lists-tgbot.main.restart_cmd=${cmd}"
+		done
 		changed=1
 	fi
 	if [ -n "$PREV_STATE_PATH" ]; then

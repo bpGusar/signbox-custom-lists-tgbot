@@ -124,8 +124,7 @@ func TestMainMenuInlineKeyboard_baseActions(t *testing.T) {
 
 func TestMainMenuInlineKeyboard_withSettings(t *testing.T) {
 	app := &App{cfg: &config.Config{
-		RestartCmd:   "/etc/init.d/podkop restart",
-		ServiceLabel: "Podkop",
+		RestartCmds: []string{"/etc/init.d/podkop restart"},
 	}}
 	kb := app.mainMenuInlineKeyboard()
 	var texts []string
@@ -144,8 +143,7 @@ func TestMainMenuInlineKeyboard_withSettings(t *testing.T) {
 
 func TestMainMenuInlineKeyboard_proxyLinksSitsBetweenManageAndSettings(t *testing.T) {
 	app := &App{cfg: &config.Config{
-		RestartCmd:   "/etc/init.d/podkop restart",
-		ServiceLabel: "Podkop",
+		RestartCmds: []string{"/etc/init.d/podkop restart"},
 	}}
 	kb := app.mainMenuInlineKeyboard()
 	var texts []string
@@ -163,8 +161,7 @@ func TestMainMenuInlineKeyboard_proxyLinksSitsBetweenManageAndSettings(t *testin
 
 func TestSettingsMenuInlineKeyboard_withRestartAndPodkop(t *testing.T) {
 	app := &App{cfg: &config.Config{
-		RestartCmd:   "/etc/init.d/podkop restart",
-		ServiceLabel: "Podkop",
+		RestartCmds: []string{"/etc/init.d/podkop restart"},
 	}, detectBackend: func() (podkop.Backend, error) { return podkop.Podkop, nil }}
 	kb := app.settingsMenuInlineKeyboard()
 	var texts []string
@@ -180,8 +177,7 @@ func TestSettingsMenuInlineKeyboard_withRestartAndPodkop(t *testing.T) {
 
 func TestSettingsMenuInlineKeyboard_singBoxOnlyRestart(t *testing.T) {
 	app := &App{cfg: &config.Config{
-		RestartCmd:   "/etc/init.d/sing-box restart",
-		ServiceLabel: "sing-box",
+		RestartCmds: []string{"/etc/init.d/sing-box restart"},
 	}}
 	kb := app.settingsMenuInlineKeyboard()
 	var texts []string
@@ -212,11 +208,10 @@ func TestMenuBtnAutoRestart_states(t *testing.T) {
 
 func TestSettingsMenuText_autoRestartStatus(t *testing.T) {
 	cfg := &config.Config{
-		RestartCmd:   "/etc/init.d/podkop restart",
-		ServiceLabel: "podkop",
+		RestartCmds: []string{"/etc/init.d/podkop restart"},
 	}
 	cfg.SetAutoRestartValue(true)
-	app := &App{cfg: cfg}
+	app := &App{cfg: cfg, detectBackend: func() (podkop.Backend, error) { return podkop.Podkop, nil }}
 	text := app.settingsMenuText()
 	if !strings.Contains(text, "Автоперезапуск podkop после изменения списков: вкл") {
 		t.Fatalf("unexpected settings text: %q", text)

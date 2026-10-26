@@ -14,25 +14,26 @@ type RestartResult struct {
 	Err     error
 }
 
-func RunRestart(ctx context.Context, cmd string) RestartResult {
-	if cmd == "" {
+// RunRestart runs the commands one after another and stops at the first one
+// that fails.
+func RunRestart(ctx context.Context, cmds []string) RestartResult {
+	if len(cmds) == 0 {
 		return RestartResult{Success: false, Err: fmt.Errorf("restart command not configured")}
 	}
 
-	c := exec.CommandContext(ctx, "sh", "-c", cmd)
 	var buf bytes.Buffer
-	c.Stdout = &buf
-	c.Stderr = &buf
-
-	err := c.Run()
-	output := buf.String()
-	if err != nil {
-		return RestartResult{Success: false, Output: output, Err: err}
+	for _, cmd := range cmds {
+		c := exec.CommandContext(ctx, "sh", "-c", cmd)
+		c.Stdout = &buf
+		c.Stderr = &buf
+		if err := c.Run(); err != nil {
+			return RestartResult{Success: false, Output: buf.String(), Err: fmt.Errorf("%s: %w", cmd, err)}
+		}
 	}
-	return RestartResult{Success: true, Output: output}
+	return RestartResult{Success: true, Output: buf.String()}
 }
 
-func RunRestartWithProgress(ctx context.Context, cmd string, onTick func(elapsed time.Duration)) RestartResult {
+func RunRestartWithProgress(ctx context.Context, cmds []string, onTick func(elapsed time.Duration)) RestartResult {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
@@ -40,7 +41,7 @@ func RunRestartWithProgress(ctx context.Context, cmd string, onTick func(elapsed
 	start := time.Now()
 
 	go func() {
-		done <- RunRestart(ctx, cmd)
+		done <- RunRestart(ctx, cmds)
 	}()
 
 	for {

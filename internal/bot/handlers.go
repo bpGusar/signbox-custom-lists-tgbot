@@ -108,7 +108,7 @@ func (a *App) versionHeader(ctx context.Context) string {
 }
 
 func (a *App) menuBtnRestart() string {
-	return "🔄 Перезапустить " + a.serviceLabel()
+	return "🔄 Перезапустить " + a.backendName()
 }
 
 func menuBtnCheckBackend(b podkop.Backend) string {
@@ -124,12 +124,12 @@ func (a *App) menuBtnAutoRestart() string {
 
 func (a *App) settingsMenuText() string {
 	text := menuBtnSettings
-	if a.cfg.RestartCmd != "" {
+	if len(a.cfg.RestartCmds) > 0 {
 		status := "выкл"
 		if a.cfg.GetAutoRestart() {
 			status = "вкл"
 		}
-		text += fmt.Sprintf("\n\nАвтоперезапуск %s после изменения списков: %s", a.serviceLabel(), status)
+		text += fmt.Sprintf("\n\nАвтоперезапуск %s после изменения списков: %s", a.backendName(), status)
 	}
 	return text
 }
@@ -162,10 +162,10 @@ func (a *App) restartHiddenReason() string {
 	if err != nil || st == nil || !st.ServiceStale {
 		return ""
 	}
-	if a.cfg.RestartCmd == "" {
-		return "Кнопка перезапуска недоступна: не настроен restart_cmd.\n" +
+	if len(a.cfg.RestartCmds) == 0 {
+		return "Кнопка перезапуска недоступна: не настроены команды перезапуска (restart_cmd).\n" +
 			"Настройка через UCI:\n" +
-			"uci set lst-signbox-lists-tgbot.main.restart_cmd='/etc/init.d/sing-box restart'\n" +
+			"uci add_list lst-signbox-lists-tgbot.main.restart_cmd='/etc/init.d/sing-box restart'\n" +
 			"uci commit lst-signbox-lists-tgbot\n" +
 			"/etc/init.d/lst-signbox-lists-tgbot restart\n" +
 			"Или через ENV: LST_SIGNBOX_LISTS_TGBOT_RESTART_CMD='...'."
@@ -206,12 +206,12 @@ func (a *App) mainMenuInlineKeyboard() *models.InlineKeyboardMarkup {
 }
 
 func (a *App) hasSettingsMenu() bool {
-	return a.cfg.RestartCmd != "" || service.UpgradeSupported()
+	return len(a.cfg.RestartCmds) > 0 || service.UpgradeSupported()
 }
 
 func (a *App) settingsMenuInlineKeyboard() *models.InlineKeyboardMarkup {
 	var rows [][]models.InlineKeyboardButton
-	if a.cfg.RestartCmd != "" {
+	if len(a.cfg.RestartCmds) > 0 {
 		rows = append(rows, []models.InlineKeyboardButton{{
 			Text: a.menuBtnRestart(), CallbackData: menuCbPrefix + "restart",
 		}})
@@ -219,7 +219,7 @@ func (a *App) settingsMenuInlineKeyboard() *models.InlineKeyboardMarkup {
 			Text: a.menuBtnAutoRestart(), CallbackData: menuCbPrefix + "toggle_auto_restart",
 		}})
 	}
-	if be, ok := a.managedBackend(); ok {
+	if be, err := a.backend(); err == nil {
 		rows = append(rows, []models.InlineKeyboardButton{{
 			Text: menuBtnCheckBackend(be), CallbackData: menuCbPrefix + "check_podkop",
 		}})
@@ -308,7 +308,7 @@ func (a *App) handleMenuCallback(ctx context.Context, b *tgbot.Bot, update *mode
 		a.logf(chatID, "menu settings")
 		a.editCallbackMessageMarkup(ctx, b, update, a.settingsMenuText(), a.settingsMenuInlineKeyboard())
 	case "toggle_auto_restart":
-		if a.cfg.RestartCmd == "" {
+		if len(a.cfg.RestartCmds) == 0 {
 			break
 		}
 		newVal := !a.cfg.GetAutoRestart()
@@ -325,7 +325,7 @@ func (a *App) handleMenuCallback(ctx context.Context, b *tgbot.Bot, update *mode
 		a.logf(chatID, "menu main_inline")
 		a.editCallbackMessageMarkup(ctx, b, update, a.welcomeText(ctx), a.mainMenuInlineKeyboard())
 	case "restart":
-		if a.cfg.RestartCmd != "" {
+		if len(a.cfg.RestartCmds) > 0 {
 			a.logf(chatID, "menu restart")
 			a.runRestartNotify(ctx, b, chatID)
 		}
@@ -490,11 +490,17 @@ func (a *App) handleListInput(ctx context.Context, b *tgbot.Bot, update *models.
 		return
 	}
 
-	a.logf(chatID, "list_input accepted type=%s count=%d", typeLabel(parsed.Type), len(parsed.Valid))
+	a.logf(chatID, "list_input accepted type=%s count=%d with_categories=%t", typeLabel(parsed.Type), len(parsed.Valid), parsed.Categories != nil)
 
 	// Which file the entries belong in is a question of its own now: the same
 	// domains can go to any podkop section.
-	opID := a.sess.Create(PendingOp{ChatID: chatID, Kind: ActionAdd, ListType: parsed.Type, Values: parsed.Valid})
+	opID := a.sess.Create(PendingOp{
+		ChatID:          chatID,
+		Kind:            ActionAdd,
+		ListType:        parsed.Type,
+		Values:          parsed.Valid,
+		ValueCategories: parsed.Categories,
+	})
 	op, ok := a.sess.Get(opID)
 	if !ok {
 		return
@@ -633,6 +639,56 @@ func opForValues(op *PendingOp, values []string) *PendingOp {
 	return &copy
 }
 
+// categoryGroup is the values of one category, in the order they came.
+type categoryGroup struct {
+	category string
+	values   []string
+}
+
+// groupByCategory splits values by the category the message put them in;
+// values the message gave no category to go to op.Category.
+func groupByCategory(op *PendingOp, values []string) []categoryGroup {
+	var groups []categoryGroup
+	index := make(map[string]int)
+	for _, v := range values {
+		cat, ok := op.ValueCategories[strings.ToLower(v)]
+		if !ok {
+			cat = op.Category
+		}
+		i, ok := index[cat]
+		if !ok {
+			i = len(groups)
+			index[cat] = i
+			groups = append(groups, categoryGroup{category: cat})
+		}
+		groups[i].values = append(groups[i].values, v)
+	}
+	return groups
+}
+
+// writeByCategory applies write to each category's share of values.
+func writeByCategory(op *PendingOp, values []string, write func(values []string, category string) error) error {
+	for _, g := range groupByCategory(op, values) {
+		if err := write(g.values, g.category); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// categoriesLine names the categories a message put its values into.
+func categoriesLine(op *PendingOp, values []string) string {
+	if len(op.ValueCategories) == 0 {
+		return ""
+	}
+	groups := groupByCategory(op, values)
+	parts := make([]string, 0, len(groups))
+	for _, g := range groups {
+		parts = append(parts, fmt.Sprintf("%s (%d)", lists.CategoryDisplayName(g.category), len(g.values)))
+	}
+	return "📂 Категории: " + strings.Join(parts, ", ")
+}
+
 func opForDisable(op *PendingOp) *PendingOp {
 	if len(op.DisableValues) == 0 {
 		return op
@@ -652,7 +708,9 @@ func opTargetLine(op *PendingOp) string {
 func (a *App) handleApplyMixed(ctx context.Context, b *tgbot.Bot, update *models.Update, op *PendingOp) {
 	var parts []string
 	if len(op.Values) > 0 {
-		if err := lists.AddNew(op.ListPath, op.Values, op.ListType, op.Category); err != nil {
+		if err := writeByCategory(op, op.Values, func(vals []string, cat string) error {
+			return lists.AddNew(op.ListPath, vals, op.ListType, cat)
+		}); err != nil {
 			a.logf(op.ChatID, "apply_mixed add_error path=%q err=%v", op.ListPath, err)
 			a.answerAndEdit(ctx, b, update, "❌ Ошибка добавления: "+err.Error())
 			return
@@ -660,7 +718,9 @@ func (a *App) handleApplyMixed(ctx context.Context, b *tgbot.Bot, update *models
 		parts = append(parts, fmt.Sprintf("➕ Добавлено (%d):\n%s", len(op.Values), lists.FormatList(op.Values)))
 	}
 	if len(op.DisableValues) > 0 {
-		if err := lists.Disable(op.ListPath, op.DisableValues, op.ListType, op.Category); err != nil {
+		if err := writeByCategory(op, op.DisableValues, func(vals []string, cat string) error {
+			return lists.Disable(op.ListPath, vals, op.ListType, cat)
+		}); err != nil {
 			a.logf(op.ChatID, "apply_mixed disable_error path=%q err=%v", op.ListPath, err)
 			a.answerAndEdit(ctx, b, update, "❌ Ошибка отключения: "+err.Error())
 			return
@@ -673,7 +733,9 @@ func (a *App) handleApplyMixed(ctx context.Context, b *tgbot.Bot, update *models
 }
 
 func (a *App) execAddAll(ctx context.Context, b *tgbot.Bot, update *models.Update, op *PendingOp) {
-	if err := lists.AddAll(op.ListPath, op.Values, op.ListType, op.Category); err != nil {
+	if err := writeByCategory(op, op.Values, func(vals []string, cat string) error {
+		return lists.AddAll(op.ListPath, vals, op.ListType, cat)
+	}); err != nil {
 		a.logf(op.ChatID, "add_all write_error path=%q err=%v", op.ListPath, err)
 		a.answerAndEdit(ctx, b, update, "Ошибка записи: "+err.Error())
 		return
@@ -698,7 +760,9 @@ func (a *App) execAddNew(ctx context.Context, b *tgbot.Bot, update *models.Updat
 		return
 	}
 
-	if err := lists.AddNew(op.ListPath, op.Values, op.ListType, op.Category); err != nil {
+	if err := writeByCategory(op, op.Values, func(vals []string, cat string) error {
+		return lists.AddNew(op.ListPath, vals, op.ListType, cat)
+	}); err != nil {
 		a.logf(op.ChatID, "add_new write_error path=%q err=%v", op.ListPath, err)
 		a.answerAndEdit(ctx, b, update, "Ошибка записи: "+err.Error())
 		return
@@ -769,7 +833,7 @@ func (a *App) handleDisablePrompt(ctx context.Context, b *tgbot.Bot, update *mod
 
 	if len(newVals) > 0 {
 		a.logf(op.ChatID, "disable requires_add_missing missing=%d active=%d disabled=%d", len(newVals), len(active), len(disabled))
-		confirmID := a.sess.Create(PendingOp{ChatID: op.ChatID, Kind: ActionDisableAddMissing, ListType: op.ListType, ListPath: op.ListPath, Section: op.Section, Values: op.Values, Category: op.Category})
+		confirmID := a.sess.Create(PendingOp{ChatID: op.ChatID, Kind: ActionDisableAddMissing, ListType: op.ListType, ListPath: op.ListPath, Section: op.Section, Values: op.Values, Category: op.Category, ValueCategories: op.ValueCategories})
 		kb := &models.InlineKeyboardMarkup{
 			InlineKeyboard: [][]models.InlineKeyboardButton{
 				{{Text: "⏸ Добавить отключёнными", CallbackData: cbPrefix + confirmID + ":confirm"}},
@@ -787,7 +851,7 @@ func (a *App) handleDisablePrompt(ctx context.Context, b *tgbot.Bot, update *mod
 	}
 	a.logf(op.ChatID, "disable confirm_only active=%d", len(active))
 
-	confirmID := a.sess.Create(PendingOp{ChatID: op.ChatID, Kind: ActionDisableConfirm, ListType: op.ListType, ListPath: op.ListPath, Section: op.Section, Values: op.Values, Category: op.Category})
+	confirmID := a.sess.Create(PendingOp{ChatID: op.ChatID, Kind: ActionDisableConfirm, ListType: op.ListType, ListPath: op.ListPath, Section: op.Section, Values: op.Values, Category: op.Category, ValueCategories: op.ValueCategories})
 	kb := &models.InlineKeyboardMarkup{
 		InlineKeyboard: [][]models.InlineKeyboardButton{
 			{{Text: "✅ Подтвердить", CallbackData: cbPrefix + confirmID + ":confirm"}},
@@ -809,7 +873,9 @@ func (a *App) execDisable(ctx context.Context, b *tgbot.Bot, update *models.Upda
 }
 
 func (a *App) execDisableWithMissing(ctx context.Context, b *tgbot.Bot, update *models.Update, op *PendingOp) {
-	if err := lists.Disable(op.ListPath, op.Values, op.ListType, op.Category); err != nil {
+	if err := writeByCategory(op, op.Values, func(vals []string, cat string) error {
+		return lists.Disable(op.ListPath, vals, op.ListType, cat)
+	}); err != nil {
 		a.logf(op.ChatID, "disable_with_missing write_error path=%q err=%v", op.ListPath, err)
 		a.answerAndEdit(ctx, b, update, "Ошибка: "+err.Error())
 		return
@@ -843,13 +909,13 @@ func (a *App) afterFilesChanged(ctx context.Context, b *tgbot.Bot, update *model
 }
 
 func (a *App) maybeAutoRestart(chatID int64, b *tgbot.Bot) {
-	if a.cfg.GetAutoRestart() && a.cfg.RestartCmd != "" {
+	if a.cfg.GetAutoRestart() && len(a.cfg.RestartCmds) > 0 {
 		go a.runRestartNotify(context.Background(), b, chatID)
 	}
 }
 
 func (a *App) runRestartNotify(parentCtx context.Context, b *tgbot.Bot, chatID int64) {
-	if a.cfg.RestartCmd == "" {
+	if len(a.cfg.RestartCmds) == 0 {
 		a.logf(chatID, "restart skipped reason=restart_cmd_empty")
 		_, _ = b.SendMessage(parentCtx, &tgbot.SendMessageParams{
 			ChatID: chatID,
@@ -858,9 +924,9 @@ func (a *App) runRestartNotify(parentCtx context.Context, b *tgbot.Bot, chatID i
 		return
 	}
 
-	label := a.serviceLabel()
-	cmd := a.restartCmd()
-	a.logf(chatID, "restart started label=%q cmd=%q auto=%t", label, cmd, a.cfg.GetAutoRestart())
+	label := a.backendName()
+	cmds := a.cfg.RestartCmds
+	a.logf(chatID, "restart started cmds=%q auto=%t", cmds, a.cfg.GetAutoRestart())
 
 	sent, err := b.SendMessage(parentCtx, &tgbot.SendMessageParams{
 		ChatID: chatID,
@@ -876,7 +942,7 @@ func (a *App) runRestartNotify(parentCtx context.Context, b *tgbot.Bot, chatID i
 	defer cancel()
 
 	start := time.Now()
-	res := service.RunRestartWithProgress(rctx, cmd, func(elapsed time.Duration) {
+	res := service.RunRestartWithProgress(rctx, cmds, func(elapsed time.Duration) {
 		if _, err := b.EditMessageText(rctx, &tgbot.EditMessageTextParams{
 			ChatID:    chatID,
 			MessageID: messageID,
@@ -936,7 +1002,7 @@ func (a *App) editOrResend(ctx context.Context, b *tgbot.Bot, chatID int64, mess
 func (a *App) formatRestartResult(ctx context.Context, chatID int64, res service.RestartResult, label string, durationSec int) string {
 	if res.Success {
 		text := fmt.Sprintf("✅ %s перезапущен (%ds).", label, durationSec)
-		if be, ok := a.managedBackend(); ok {
+		if be, err := a.backend(); err == nil {
 			secs, err := podkop.Sections(ctx)
 			if err != nil {
 				a.logf(chatID, "backend_sections_error err=%v", err)
@@ -963,8 +1029,8 @@ func (a *App) formatRestartResult(ctx context.Context, chatID int64, res service
 }
 
 func (a *App) backendIntegrationText(ctx context.Context) (string, bool) {
-	be, ok := a.managedBackend()
-	if !ok {
+	be, err := a.backend()
+	if err != nil {
 		return "", false
 	}
 	secs, err := podkop.Sections(ctx)
