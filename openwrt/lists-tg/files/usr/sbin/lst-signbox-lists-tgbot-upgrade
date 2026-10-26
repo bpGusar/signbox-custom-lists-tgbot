@@ -267,8 +267,6 @@ fetch_packages() {
 backup_current_config() {
 	PREV_ENABLED="$(uci -q get lst-signbox-lists-tgbot.main.enabled || true)"
 	PREV_TOKEN="$(uci -q get lst-signbox-lists-tgbot.main.token || true)"
-	PREV_DOMAIN_LIST="$(uci -q get lst-signbox-lists-tgbot.main.domain_list || true)"
-	PREV_IP_LIST="$(uci -q get lst-signbox-lists-tgbot.main.ip_list || true)"
 	PREV_RESTART_CMD="$(uci -q get lst-signbox-lists-tgbot.main.restart_cmd || true)"
 	PREV_SERVICE_LABEL="$(uci -q get lst-signbox-lists-tgbot.main.service_label || true)"
 	PREV_STATE_PATH="$(uci -q get lst-signbox-lists-tgbot.main.state_path || true)"
@@ -287,14 +285,8 @@ restore_config() {
 		uci set "lst-signbox-lists-tgbot.main.token=${PREV_TOKEN}"
 		changed=1
 	fi
-	if [ -n "$PREV_DOMAIN_LIST" ]; then
-		uci set "lst-signbox-lists-tgbot.main.domain_list=${PREV_DOMAIN_LIST}"
-		changed=1
-	fi
-	if [ -n "$PREV_IP_LIST" ]; then
-		uci set "lst-signbox-lists-tgbot.main.ip_list=${PREV_IP_LIST}"
-		changed=1
-	fi
+	uci -q delete lst-signbox-lists-tgbot.main.domain_list && changed=1
+	uci -q delete lst-signbox-lists-tgbot.main.ip_list && changed=1
 	if [ -n "$PREV_RESTART_CMD" ]; then
 		uci set "lst-signbox-lists-tgbot.main.restart_cmd=${PREV_RESTART_CMD}"
 		changed=1

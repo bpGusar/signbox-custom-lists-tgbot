@@ -446,14 +446,6 @@ return view.extend({
 		o.placeholder = '123456:ABC...';
 		o.rmempty = false;
 
-		o = s.option(form.Value, 'domain_list', _('Domain list file'));
-		o.default = '/etc/lst-signbox-lists-tgbot/domain_list.lst';
-		o.rmempty = false;
-
-		o = s.option(form.Value, 'ip_list', _('IP/CIDR list file'));
-		o.default = '/etc/lst-signbox-lists-tgbot/ip_list.lst';
-		o.rmempty = false;
-
 		o = s.option(form.Value, 'restart_cmd', _('Restart command'));
 		o.default = '/etc/init.d/podkop restart';
 		o.placeholder = '/etc/init.d/podkop restart';

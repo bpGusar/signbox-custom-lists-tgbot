@@ -84,8 +84,8 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		verChecker: verChecker,
 	}
 	log.Printf(
-		"lst-signbox-lists-tgbot init: version=%s domain_list=%s ip_list=%s restart_cmd_set=%t auto_restart=%t state_path=%s",
-		version.Display(), cfg.DomainList, cfg.IPList, cfg.RestartCmd != "", cfg.GetAutoRestart(), cfg.StatePath,
+		"lst-signbox-lists-tgbot init: version=%s restart_cmd_set=%t auto_restart=%t state_path=%s",
+		version.Display(), cfg.RestartCmd != "", cfg.GetAutoRestart(), cfg.StatePath,
 	)
 
 	opts := []tgbot.Option{

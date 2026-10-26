@@ -2,7 +2,6 @@ package bot
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -363,12 +362,8 @@ func (a *App) missingFiles(ctx context.Context) []string {
 // making the user open a menu to find out.
 func (a *App) sectionsSummary(ctx context.Context) string {
 	secs := a.sections(ctx)
-	if len(secs) == 1 && secs[0].Name == "" {
-		text := fmt.Sprintf("📄 Домены: %s\n📄 IP: %s", a.cfg.DomainList, a.cfg.IPList)
-		if _, err := a.backend(); errors.Is(err, podkop.ErrNotInstalled) {
-			text += "\nℹ️ Не найден ни podkop, ни forkop — работаю с файлами из настроек бота."
-		}
-		return text
+	if len(secs) == 0 {
+		return "🗂 В конфиге " + a.backendName() + " нет секций."
 	}
 	names := make([]string, 0, len(secs))
 	for _, s := range secs {
@@ -398,7 +393,7 @@ func (a *App) sendListFile(ctx context.Context, b *tgbot.Bot, chatID int64, tgt 
 			Filename: filename,
 			Data:     f,
 		},
-		Caption: fmt.Sprintf("%s — %s\n%s", sectionDisplayName(tgt.Section), label, path),
+		Caption: fmt.Sprintf("%s — %s\n%s", tgt.Section, label, path),
 	})
 	if err != nil {
 		a.logf(chatID, "send_document_error label=%q path=%q err=%v", label, path, err)

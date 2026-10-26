@@ -2,7 +2,6 @@ package bot
 
 import (
 	"context"
-	"errors"
 	"strings"
 
 	tgbot "github.com/go-telegram/bot"
@@ -76,17 +75,17 @@ func (a *App) serviceLabel() string {
 	return a.cfg.ServiceLabel
 }
 
-// backendMiddleware refuses to work while podkop and forkop are both
-// installed: their configs would disagree about which lists are routed where.
+// backendMiddleware refuses to work unless exactly one of podkop and forkop
+// is installed: every list the bot edits belongs to one of their sections.
 func (a *App) backendMiddleware(next tgbot.HandlerFunc) tgbot.HandlerFunc {
 	return func(ctx context.Context, b *tgbot.Bot, update *models.Update) {
 		_, err := a.backend()
-		if !errors.Is(err, podkop.ErrBothInstalled) {
+		if err == nil {
 			next(ctx, b, update)
 			return
 		}
 		chatID, _ := updateChatID(update)
-		a.logf(chatID, "backend_conflict err=%v", err)
+		a.logf(chatID, "backend_unavailable err=%v", err)
 		text := "⛔️ " + err.Error()
 		if update.CallbackQuery != nil {
 			_, _ = b.AnswerCallbackQuery(ctx, &tgbot.AnswerCallbackQueryParams{

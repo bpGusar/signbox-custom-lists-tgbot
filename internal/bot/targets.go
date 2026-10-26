@@ -17,20 +17,10 @@ import (
 // domain list any more: every list belongs to a podkop section, and a section
 // can be fed from several files at once.
 type listTarget struct {
-	// Section is the podkop section name, empty for the fallback below.
 	Section string
 	Type    lists.EntryType
 	Path    string
 }
-
-// fallbackSectionToken stands for the synthetic section the bot shows when
-// podkop's config cannot be read — a router running plain sing-box still has
-// the file pair from the bot's own settings, and hiding it would leave such a
-// setup with no way in.
-const fallbackSectionToken = "cfg"
-
-// fallbackSectionName is what that synthetic section is called on screen.
-const fallbackSectionName = "Файлы из настроек бота"
 
 var (
 	// errSectionGone: the config changed under a button pressed later.
@@ -50,50 +40,22 @@ func shortToken(s string) string {
 
 // sectionToken keys a podkop section. Section names are case-sensitive in UCI,
 // so the token is too.
-func sectionToken(name string) string {
-	if name == "" {
-		return fallbackSectionToken
-	}
-	return shortToken(name)
-}
+func sectionToken(name string) string { return shortToken(name) }
 
 func pathToken(path string) string { return shortToken(path) }
 
-func sectionDisplayName(name string) string {
-	if name == "" {
-		return fallbackSectionName
-	}
-	return name
-}
-
-// sections lists podkop's routing sections, falling back to the bot's own
-// file pair when there is no podkop config to read.
+// sections lists the backend's routing sections.
 func (a *App) sections(ctx context.Context) []podkop.Section {
 	read := a.readSections
 	if read == nil {
 		read = podkop.Sections
 	}
 	secs, err := read(ctx)
-	if err == nil && len(secs) > 0 {
-		return secs
-	}
 	if err != nil {
-		a.logf(0, "podkop_sections_error err=%v fallback=config", err)
+		a.logf(0, "sections_error err=%v", err)
+		return nil
 	}
-	return []podkop.Section{a.fallbackSection()}
-}
-
-// fallbackSection wraps the configured file pair as if it were a section, so
-// every screen below can stay written against sections only.
-func (a *App) fallbackSection() podkop.Section {
-	var s podkop.Section
-	if a.cfg.DomainList != "" {
-		s.DomainLists = []string{a.cfg.DomainList}
-	}
-	if a.cfg.IPList != "" {
-		s.SubnetLists = []string{a.cfg.IPList}
-	}
-	return s
+	return secs
 }
 
 // findSection resolves a token back to the section it was made from. A section
@@ -173,7 +135,7 @@ func (a *App) sharedWith(ctx context.Context, tgt listTarget) []string {
 		}
 		for _, p := range s.Lists(tgt.Type) {
 			if p == tgt.Path {
-				others = append(others, sectionDisplayName(s.Name))
+				others = append(others, s.Name)
 				break
 			}
 		}
@@ -193,7 +155,7 @@ func fileLabel(p string) string {
 
 // targetLine tells the user which file the screen is about to change.
 func targetLine(tgt listTarget) string {
-	return fmt.Sprintf("🗂 %s · %s", sectionDisplayName(tgt.Section), tgt.Path)
+	return fmt.Sprintf("🗂 %s · %s", tgt.Section, tgt.Path)
 }
 
 // sectionBindingLine describes one of a section's two list slots.
@@ -212,7 +174,7 @@ func sectionBindingLine(s podkop.Section, t lists.EntryType) string {
 // sectionButtonLabel keeps the section list readable: the name, what podkop
 // does with the section, and which of the two lists it actually has.
 func sectionButtonLabel(s podkop.Section) string {
-	label := sectionDisplayName(s.Name)
+	label := s.Name
 	if s.ConnectionType != "" {
 		label += " · " + s.ConnectionType
 	}

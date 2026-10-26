@@ -12,18 +12,14 @@ import (
 
 const (
 	uciPackage     = "lst-signbox-lists-tgbot"
-	defaultDomain  = "/etc/lst-signbox-lists-tgbot/domain_list.lst"
-	defaultIP      = "/etc/lst-signbox-lists-tgbot/ip_list.lst"
 	defaultLabel   = "сервис"
 	defaultState   = "/var/lib/lst-signbox-lists-tgbot/state.json"
 	defaultLogPath = "/etc/lst-signbox-lists-tgbot/logs/bot.log"
 )
 
 type Config struct {
-	Enabled      bool
-	Token        string
-	DomainList   string
-	IPList       string
+	Enabled bool
+	Token   string
 	// RestartCmd is only ever set by the admin via UCI/LuCI (or the
 	// equivalent env var) at process startup, never by Telegram user input.
 	// It is executed with "sh -c" (see service.RunRestart) — keep it that
@@ -50,8 +46,6 @@ func (c *Config) SetAutoRestartValue(v bool) {
 func Load() (*Config, error) {
 	cfg := &Config{
 		Enabled:      true,
-		DomainList:   defaultDomain,
-		IPList:       defaultIP,
 		ServiceLabel: defaultLabel,
 		StatePath:    defaultState,
 		LogPath:      defaultLogPath,
@@ -63,12 +57,6 @@ func Load() (*Config, error) {
 	}
 	if token != "" {
 		cfg.Token = token
-		if v := getenvAny("LST_SIGNBOX_LISTS_TGBOT_DOMAIN_LIST", "LISTS_TG_DOMAIN_LIST"); v != "" {
-			cfg.DomainList = v
-		}
-		if v := getenvAny("LST_SIGNBOX_LISTS_TGBOT_IP_LIST", "LISTS_TG_IP_LIST"); v != "" {
-			cfg.IPList = v
-		}
 		if v := getenvAny("LST_SIGNBOX_LISTS_TGBOT_RESTART_CMD", "LISTS_TG_RESTART_CMD"); v != "" {
 			cfg.RestartCmd = v
 		}
@@ -101,12 +89,6 @@ func Load() (*Config, error) {
 	}
 	cfg.Token = token
 
-	if v, err := uciGet("main", "domain_list"); err == nil && v != "" {
-		cfg.DomainList = v
-	}
-	if v, err := uciGet("main", "ip_list"); err == nil && v != "" {
-		cfg.IPList = v
-	}
 	if v, err := uciGet("main", "restart_cmd"); err == nil {
 		cfg.RestartCmd = v
 	}

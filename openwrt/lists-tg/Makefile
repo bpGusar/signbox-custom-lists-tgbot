@@ -14,7 +14,7 @@ define Package/lst-signbox-lists-tgbot
 endef
 
 define Package/lst-signbox-lists-tgbot/description
-  Lightweight Telegram bot to manage domain_list.lst and ip_list.lst on OpenWrt.
+  Lightweight Telegram bot to manage podkop/forkop list files on OpenWrt.
 endef
 
 define Package/lst-signbox-lists-tgbot/conffiles

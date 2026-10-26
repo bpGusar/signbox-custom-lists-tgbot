@@ -15,13 +15,10 @@ import (
 )
 
 // testApp stands in for a router: the sections are whatever the test says
-// they are, and the config keeps the fallback pair meaningful.
+// they are.
 func testApp(secs []podkop.Section, err error) *App {
 	return &App{
-		cfg: &config.Config{
-			DomainList: "/etc/lst-signbox-lists-tgbot/domain_list.lst",
-			IPList:     "/etc/lst-signbox-lists-tgbot/ip_list.lst",
-		},
+		cfg:          &config.Config{},
 		readSections: func(context.Context) ([]podkop.Section, error) { return secs, err },
 	}
 }
@@ -37,23 +34,10 @@ var sampleSections = []podkop.Section{
 	{Name: "youtube", ConnectionType: "proxy", DomainLists: []string{"/etc/lst/domain_list.lst"}},
 }
 
-// Without a podkop config to read, the bot must still reach the file pair from
-// its own settings — otherwise a plain sing-box install has no way in.
-func TestSectionsFallsBackToConfig(t *testing.T) {
+func TestSectionsWithoutConfig(t *testing.T) {
 	a := testApp(nil, errors.New("uci missing"))
-
-	secs := a.sections(context.Background())
-	if len(secs) != 1 || secs[0].Name != "" {
-		t.Fatalf("expected one synthetic section, got %+v", secs)
-	}
-	if got := secs[0].Lists(lists.TypeDomain); !reflect.DeepEqual(got, []string{a.cfg.DomainList}) {
-		t.Fatalf("fallback domain list = %v", got)
-	}
-	if got := secs[0].Lists(lists.TypeIP); !reflect.DeepEqual(got, []string{a.cfg.IPList}) {
-		t.Fatalf("fallback subnet list = %v", got)
-	}
-	if sectionToken("") != fallbackSectionToken {
-		t.Fatalf("fallback token = %q", sectionToken(""))
+	if secs := a.sections(context.Background()); len(secs) != 0 {
+		t.Fatalf("expected no sections, got %+v", secs)
 	}
 }
 
@@ -123,13 +107,9 @@ func TestSectionButtonLabel(t *testing.T) {
 			t.Errorf("label for %q = %q, want %q", s.Name, got, cases[s.Name])
 		}
 	}
-	if got := sectionButtonLabel(podkop.Section{SubnetLists: []string{"/x.lst"}}); got != fallbackSectionName+" · IP" {
-		t.Errorf("fallback label = %q", got)
-	}
 }
 
-// A section with only one of the two lists offers to bind the other, and the
-// synthetic fallback section offers nothing: it is not in podkop's config.
+// A section with only one of the two lists offers to bind the other.
 func TestSectionActionRows(t *testing.T) {
 	a := testApp(sampleSections, nil)
 	secTok := sectionToken("youtube")
@@ -147,27 +127,17 @@ func TestSectionActionRows(t *testing.T) {
 	if want := targetCallback(verbBind, lists.TypeIP, secTok, ""); rows[0][0].CallbackData != want {
 		t.Fatalf("bind callback = %q, want %q", rows[0][0].CallbackData, want)
 	}
-
-	if rows := a.sectionActionRows(a.fallbackSection(), lists.TypeDomain, fallbackSectionToken); len(rows) != 1 {
-		t.Fatalf("the fallback pair is bound, so it gets buttons: %+v", rows)
-	}
-	empty := podkop.Section{}
-	if rows := a.sectionActionRows(empty, lists.TypeIP, fallbackSectionToken); rows != nil {
-		t.Fatalf("nothing to bind outside podkop, got %+v", rows)
-	}
 }
 
 func TestSuggestBindPath(t *testing.T) {
-	a := testApp(sampleSections, nil)
-
-	if got, want := a.suggestBindPath("youtube", lists.TypeDomain), "/etc/lst-signbox-lists-tgbot/youtube_domain_list.lst"; got != want {
+	if got, want := suggestBindPath("youtube", lists.TypeDomain), "/etc/lst-signbox-lists-tgbot/youtube_domain_list.lst"; got != want {
 		t.Errorf("suggested path = %q, want %q", got, want)
 	}
-	if got, want := a.suggestBindPath("main", lists.TypeIP), "/etc/lst-signbox-lists-tgbot/main_ip_list.lst"; got != want {
+	if got, want := suggestBindPath("main", lists.TypeIP), "/etc/lst-signbox-lists-tgbot/main_ip_list.lst"; got != want {
 		t.Errorf("suggested path = %q, want %q", got, want)
 	}
 	// Whatever is suggested must pass the check the binding itself applies.
-	if err := podkop.ValidatePath(a.suggestBindPath("youtube", lists.TypeDomain)); err != nil {
+	if err := podkop.ValidatePath(suggestBindPath("youtube", lists.TypeDomain)); err != nil {
 		t.Errorf("suggested path rejected by ValidatePath: %v", err)
 	}
 }
@@ -228,11 +198,5 @@ func TestAddTargetRows(t *testing.T) {
 		if !strings.HasPrefix(row[0].CallbackData, cbPrefix+"op1:"+cbSectionPrefix) {
 			t.Fatalf("unexpected callback %q", row[0].CallbackData)
 		}
-	}
-
-	// The synthetic section is not in podkop's config: there is nothing to
-	// bind a file to, so an empty one is not offered.
-	if rows := addTargetRows([]podkop.Section{{}}, lists.TypeDomain, "op1"); len(rows) != 0 {
-		t.Fatalf("expected no rows for an empty fallback section, got %+v", rows)
 	}
 }

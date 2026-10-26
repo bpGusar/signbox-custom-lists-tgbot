@@ -26,8 +26,6 @@ RETRIES=3
 DOWNLOAD_TIMEOUT=60
 PREV_ENABLED=""
 PREV_TOKEN=""
-PREV_DOMAIN_LIST=""
-PREV_IP_LIST=""
 PREV_RESTART_CMD=""
 PREV_SERVICE_LABEL=""
 PREV_STATE_PATH=""
@@ -305,8 +303,6 @@ fetch_packages() {
 backup_current_config() {
 	PREV_ENABLED="$(uci -q get lst-signbox-lists-tgbot.main.enabled || uci -q get lists-tg.main.enabled || true)"
 	PREV_TOKEN="$(uci -q get lst-signbox-lists-tgbot.main.token || uci -q get lists-tg.main.token || true)"
-	PREV_DOMAIN_LIST="$(uci -q get lst-signbox-lists-tgbot.main.domain_list || uci -q get lists-tg.main.domain_list || true)"
-	PREV_IP_LIST="$(uci -q get lst-signbox-lists-tgbot.main.ip_list || uci -q get lists-tg.main.ip_list || true)"
 	PREV_RESTART_CMD="$(uci -q get lst-signbox-lists-tgbot.main.restart_cmd || uci -q get lists-tg.main.restart_cmd || true)"
 	PREV_SERVICE_LABEL="$(uci -q get lst-signbox-lists-tgbot.main.service_label || uci -q get lists-tg.main.service_label || true)"
 	PREV_STATE_PATH="$(uci -q get lst-signbox-lists-tgbot.main.state_path || uci -q get lists-tg.main.state_path || true)"
@@ -414,14 +410,8 @@ configure_token() {
 		changed=1
 	fi
 
-	if [ -n "$PREV_DOMAIN_LIST" ]; then
-		uci set "lst-signbox-lists-tgbot.main.domain_list=${PREV_DOMAIN_LIST}"
-		changed=1
-	fi
-	if [ -n "$PREV_IP_LIST" ]; then
-		uci set "lst-signbox-lists-tgbot.main.ip_list=${PREV_IP_LIST}"
-		changed=1
-	fi
+	uci -q delete lst-signbox-lists-tgbot.main.domain_list && changed=1
+	uci -q delete lst-signbox-lists-tgbot.main.ip_list && changed=1
 	if [ -n "$PREV_RESTART_CMD" ]; then
 		uci set "lst-signbox-lists-tgbot.main.restart_cmd=${PREV_RESTART_CMD}"
 		changed=1

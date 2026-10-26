@@ -1,6 +1,6 @@
 # lst-signbox-lists-tgbot
 
-Лёгкий Telegram-бот для OpenWrt 24.10 (opkg) и 25.12 (apk): управление файлами `domain_list.lst` и `ip_list.lst` через inline-кнопки. Работает с [podkop](https://github.com/itdoginfo/podkop) и [forkop](https://github.com/ushan0v/forkop) — какой из них установлен, бот определяет сам.
+Лёгкий Telegram-бот для OpenWrt 24.10 (opkg) и 25.12 (apk): управление файлами списков доменов и IP через inline-кнопки. Работает с [podkop](https://github.com/itdoginfo/podkop) и [forkop](https://github.com/ushan0v/forkop) — какой из них установлен, бот определяет сам.
 
 ## Возможности
 
@@ -72,8 +72,6 @@ TARGETS=mipsel_24kc make ipk
 
 - **Enabled** — включить бота
 - **Bot Token** — токен от BotFather
-- **Domain list file** — путь к `domain_list.lst` (по умолчанию `/etc/lst-signbox-lists-tgbot/domain_list.lst`)
-- **IP/CIDR list file** — путь к `ip_list.lst` (по умолчанию `/etc/lst-signbox-lists-tgbot/ip_list.lst`)
 
 Сохранить и применить.
 
@@ -284,9 +282,6 @@ Podkop и forkop раскладывают маршрутизацию по сек
 список заново не нужно. Целевой файл всегда написан в шапке сообщения
 с действиями.
 
-Вопрос не задаётся только там, где выбирать не из чего — когда podkop не
-читается и есть лишь пара файлов из настроек бота.
-
 **Привязка файла.** Если у секции нет `local_domain_lists` (или
 `local_subnet_lists`), в её карточке будет `🔗 Привязать файл`. Бот предложит
 путь вида `/etc/lst-signbox-lists-tgbot/<секция>_domain_list.lst`, свой путь
@@ -298,9 +293,8 @@ Podkop и forkop раскладывают маршрутизацию по сек
 Путь принимается только абсолютный, без `..`, из латиницы, цифр и `. _ - /` —
 он попадает в чужой конфиг и в него же бот потом пишет.
 
-**Если не установлен ни podkop, ни forkop** (или их конфиг не читается), бот
-показывает одну псевдо-секцию «Файлы из настроек бота» с парой файлов из
-`domain_list` / `ip_list` — как и раньше, до появления секций.
+**Если не установлен ни podkop, ни forkop**, бот на любое действие отвечает
+ошибкой и не работает, пока не будет установлен один из них.
 
 `⚙️ Настройки` → `🔗 Проверить Podkop` (или `Forkop`) показывает все секции и привязанные
 к ним файлы одним сообщением.
@@ -506,8 +500,6 @@ tail -f /etc/lst-signbox-lists-tgbot/logs/bot.log
 
 ```bash
 export LST_SIGNBOX_LISTS_TGBOT_TOKEN="your-token"
-export LST_SIGNBOX_LISTS_TGBOT_DOMAIN_LIST="/tmp/domain_list.lst"
-export LST_SIGNBOX_LISTS_TGBOT_IP_LIST="/tmp/ip_list.lst"
 export LST_SIGNBOX_LISTS_TGBOT_RESTART_CMD="echo restart"
 export LST_SIGNBOX_LISTS_TGBOT_STATE_PATH="/tmp/lst-signbox-lists-tgbot-state.json"
 export LST_SIGNBOX_LISTS_TGBOT_LOG_PATH="/tmp/lst-signbox-lists-tgbot.log"

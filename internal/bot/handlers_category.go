@@ -50,7 +50,7 @@ func (a *App) showListMenu(ctx context.Context, b *tgbot.Bot, update *models.Upd
 	}
 
 	active, disabled, named := summaryLine(cats)
-	text := fmt.Sprintf("📋 %s — %s\n%s\n\n", listTitle(tgt.Type), sectionDisplayName(tgt.Section), tgt.Path)
+	text := fmt.Sprintf("📋 %s — %s\n%s\n\n", listTitle(tgt.Type), tgt.Section, tgt.Path)
 	if active+disabled == 0 {
 		text += "Список пуст."
 		a.answerAndEditMarkup(ctx, b, update, text, back)
@@ -111,7 +111,7 @@ func (a *App) sendFullList(ctx context.Context, b *tgbot.Bot, update *models.Upd
 
 	active, disabled, _ := summaryLine(cats)
 	header := fmt.Sprintf("📋 <b>%s</b> · %s — %d (%d ✅ / %d ⏸)",
-		esc(listTitle(t)), esc(sectionDisplayName(tgt.Section)), active+disabled, active, disabled)
+		esc(listTitle(t)), esc(tgt.Section), active+disabled, active, disabled)
 	render := buildListRender(header, blocks, shown, listMessageMaxLen)
 
 	a.answerCallback(ctx, b, update)
@@ -183,7 +183,7 @@ func (a *App) sendCategoryPicker(ctx context.Context, b *tgbot.Bot, update *mode
 		return
 	}
 
-	header := fmt.Sprintf("📂 Категории — %s · %s", strings.ToLower(listTitle(tgt.Type)), sectionDisplayName(tgt.Section))
+	header := fmt.Sprintf("📂 Категории — %s · %s", strings.ToLower(listTitle(tgt.Type)), tgt.Section)
 	if rows, ok := categoryPickRows(cats, func(name string) string { return viewCategoryCallback(tgt, name) }); ok {
 		rows = append(rows, []models.InlineKeyboardButton{
 			{Text: btnBackToSec, CallbackData: menuCbPrefix + "sec_" + sectionToken(tgt.Section)},

@@ -90,8 +90,8 @@ func (a *App) showSections(ctx context.Context, b *tgbot.Bot, update *models.Upd
 	}})
 
 	text := "🗂 Секции " + a.backendTitle() + "\n\nВыберите секцию — дальше просмотр и выгрузка её списков."
-	if len(secs) == 1 && secs[0].Name == "" {
-		text = "🗂 Списки\n\nКонфиг " + a.backendName() + " прочитать не удалось, поэтому доступна только пара файлов из настроек бота."
+	if len(secs) == 0 {
+		text = "🗂 В конфиге " + a.backendName() + " нет секций."
 	}
 	a.answerAndEditMarkup(ctx, b, update, text, &models.InlineKeyboardMarkup{InlineKeyboard: rows})
 }
@@ -104,7 +104,7 @@ func (a *App) showSectionCard(ctx context.Context, b *tgbot.Bot, update *models.
 		return
 	}
 
-	head := "🗂 " + sectionDisplayName(s.Name)
+	head := "🗂 " + s.Name
 	if s.ConnectionType != "" {
 		head += " · " + s.ConnectionType
 	}
@@ -131,11 +131,6 @@ func (a *App) sectionActionRows(s podkop.Section, t lists.EntryType, secTok stri
 		kind = "IP"
 	}
 	if len(s.Lists(t)) == 0 {
-		// The fallback section is not in podkop's config, so there is nothing
-		// there to bind a file to.
-		if s.Name == "" {
-			return nil
-		}
 		return [][]models.InlineKeyboardButton{{{
 			Text:         "🔗 Привязать файл " + kind,
 			CallbackData: targetCallback(verbBind, t, secTok, ""),
@@ -233,23 +228,16 @@ func (a *App) showFilePicker(ctx context.Context, b *tgbot.Bot, update *models.U
 	a.answerAndEditMarkup(ctx, b, update, text, &models.InlineKeyboardMarkup{InlineKeyboard: rows})
 }
 
+const listsDir = "/etc/lst-signbox-lists-tgbot"
+
 // suggestBindPath keeps a new file next to the ones the bot already manages,
 // named after the section it belongs to.
-func (a *App) suggestBindPath(sectionName string, t lists.EntryType) string {
-	base := a.cfg.DomainList
+func suggestBindPath(sectionName string, t lists.EntryType) string {
+	name := "domain_list.lst"
 	if t == lists.TypeIP {
-		base = a.cfg.IPList
+		name = "ip_list.lst"
 	}
-	if base == "" {
-		base = "/etc/lst-signbox-lists-tgbot/domain_list.lst"
-		if t == lists.TypeIP {
-			base = "/etc/lst-signbox-lists-tgbot/ip_list.lst"
-		}
-	}
-	if sectionName == "" {
-		return base
-	}
-	return pathpkg.Join(pathpkg.Dir(base), sectionName+"_"+pathpkg.Base(base))
+	return pathpkg.Join(listsDir, sectionName+"_"+name)
 }
 
 // startBind offers a path for a list the section does not have yet.
@@ -261,17 +249,12 @@ func (a *App) startBind(ctx context.Context, b *tgbot.Bot, update *models.Update
 		a.answerAndEditMarkup(ctx, b, update, targetError(err), a.backToSectionsInlineKeyboard())
 		return
 	}
-	if s.Name == "" {
-		a.answerAndEditMarkup(ctx, b, update,
-			"ℹ️ Эта секция не из "+a.backendName()+" — привязывать файл некуда.", a.backToSectionsInlineKeyboard())
-		return
-	}
 	a.logf(chatID, "bind_prompt section=%q type=%s", s.Name, typeLabel(act.typ))
 	a.showBindConfirm(ctx, b, a.replyTo(update, chatID), PendingOp{
 		ChatID:   chatID,
 		Section:  s.Name,
 		ListType: act.typ,
-	}, a.suggestBindPath(s.Name, act.typ))
+	}, suggestBindPath(s.Name, act.typ))
 }
 
 // showBindConfirm is the last screen before the backend's config is touched.
@@ -303,7 +286,7 @@ func (a *App) promptBindPath(ctx context.Context, b *tgbot.Bot, update *models.U
 	a.sess.Await(op.ChatID, awaitBindPath, op.ID)
 	a.answerAndEditMarkup(ctx, b, update,
 		"✍️ Пришлите абсолютный путь к файлу одним сообщением, например:\n"+
-			a.suggestBindPath(op.Section, op.ListType)+
+			suggestBindPath(op.Section, op.ListType)+
 			"\n\nДопустимы латиница, цифры и символы . _ - /",
 		a.cancelKeyboard(op.ID))
 }

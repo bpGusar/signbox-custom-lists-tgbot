@@ -761,7 +761,7 @@ func (a *App) proxySectionRows(ctx context.Context, impID string) [][]models.Inl
 // the button since it was drawn.
 func (a *App) findProxySection(ctx context.Context, token string) (podkop.Section, error) {
 	for _, s := range a.sections(ctx) {
-		if s.Name != "" && sectionToken(s.Name) == token {
+		if sectionToken(s.Name) == token {
 			return s, nil
 		}
 	}

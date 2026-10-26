@@ -332,22 +332,16 @@ function Get-BotToken {
 function Set-DevEnvironment {
     param([string]$Token)
 
-    $domainList = Join-Path $TestDataDir 'domain_list.lst'
-    $ipList = Join-Path $TestDataDir 'ip_list.lst'
     $statePath = Join-Path $TestDataDir 'state.json'
     $logPath = Join-Path $TestDataDir 'bot.log'
 
     $env:LST_SIGNBOX_LISTS_TGBOT_TOKEN = $Token
-    $env:LST_SIGNBOX_LISTS_TGBOT_DOMAIN_LIST = $domainList
-    $env:LST_SIGNBOX_LISTS_TGBOT_IP_LIST = $ipList
     $env:LST_SIGNBOX_LISTS_TGBOT_RESTART_CMD = 'echo restart'
     $env:LST_SIGNBOX_LISTS_TGBOT_STATE_PATH = $statePath
     $env:LST_SIGNBOX_LISTS_TGBOT_LOG_PATH = $logPath
     $env:LST_SIGNBOX_LISTS_TGBOT_ENABLED = 'true'
 
     Write-Title 'Переменные окружения (текущая сессия)'
-    Write-Ok "LST_SIGNBOX_LISTS_TGBOT_DOMAIN_LIST = $domainList"
-    Write-Ok "LST_SIGNBOX_LISTS_TGBOT_IP_LIST      = $ipList"
     Write-Ok "LST_SIGNBOX_LISTS_TGBOT_STATE_PATH   = $statePath"
     Write-Ok "LST_SIGNBOX_LISTS_TGBOT_LOG_PATH     = $logPath"
     Write-Ok 'LST_SIGNBOX_LISTS_TGBOT_RESTART_CMD  = echo restart'

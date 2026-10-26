@@ -21,7 +21,7 @@ var (
 
 var (
 	ErrBothInstalled = errors.New("на роутере установлены и podkop, и forkop — бот работает только с одним из них, удалите лишний")
-	ErrNotInstalled  = errors.New("не установлен ни podkop, ни forkop")
+	ErrNotInstalled  = errors.New("на роутере не установлен ни podkop, ни forkop — бот работает только с одним из них")
 )
 
 func (b Backend) InitScript() string { return "/etc/init.d/" + b.Name }
