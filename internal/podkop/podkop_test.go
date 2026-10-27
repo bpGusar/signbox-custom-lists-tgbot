@@ -3,6 +3,7 @@ package podkop
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -15,6 +16,7 @@ type fakeUCI struct {
 	show   string
 	calls  [][]string
 	failOn string
+	added  int
 }
 
 func (f *fakeUCI) install(t *testing.T) {
@@ -28,6 +30,10 @@ func (f *fakeUCI) install(t *testing.T) {
 		}
 		if len(args) == 2 && args[0] == "show" {
 			return f.show, nil
+		}
+		if args[0] == "add" {
+			f.added++
+			return fmt.Sprintf("cfg%d\n", f.added), nil
 		}
 		return "", nil
 	}
