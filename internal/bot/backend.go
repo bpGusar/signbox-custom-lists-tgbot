@@ -9,8 +9,6 @@ import (
 	"lst-signbox-lists-tgbot/internal/podkop"
 )
 
-var emptyListFiles = podkop.EmptyListFiles
-
 func (a *App) backend() (podkop.Backend, error) {
 	if a.detectBackend != nil {
 		return a.detectBackend()

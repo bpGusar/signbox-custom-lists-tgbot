@@ -925,16 +925,6 @@ func (a *App) runRestartNotify(parentCtx context.Context, b *tgbot.Bot, chatID i
 	}
 
 	label := a.backendName()
-	if empty, err := emptyListFiles(parentCtx); err == nil && len(empty) > 0 {
-		a.logf(chatID, "restart skipped reason=empty_list_files files=%q", strings.Join(empty, ","))
-		_, _ = b.SendMessage(parentCtx, &tgbot.SendMessageParams{
-			ChatID: chatID,
-			Text: fmt.Sprintf("⛔️ %s не перезапущен: с пустым или отсутствующим файлом списка он не запустится.\n\n%s\n\n"+
-				"Добавьте в эти файлы хотя бы одну запись или уберите их из секций.", label, strings.Join(empty, "\n")),
-			ReplyMarkup: a.backToMainMenuInlineKeyboard(),
-		})
-		return
-	}
 	cmds := a.cfg.RestartCmds
 	a.logf(chatID, "restart started cmds=%q auto=%t", cmds, a.cfg.GetAutoRestart())
 
