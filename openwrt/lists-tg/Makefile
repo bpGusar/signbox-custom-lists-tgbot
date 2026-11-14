@@ -36,8 +36,6 @@ define Package/lst-signbox-lists-tgbot/install
 	$(INSTALL_CONF) ./files/etc/config/lst-signbox-lists-tgbot $(1)/etc/config/lst-signbox-lists-tgbot
 	$(INSTALL_DIR) $(1)/etc/init.d
 	$(INSTALL_BIN) ./files/etc/init.d/lst-signbox-lists-tgbot $(1)/etc/init.d/lst-signbox-lists-tgbot
-	# Kept so opkg upgrades do not delete it on routers where frpc was set up by older versions.
-	$(INSTALL_BIN) ./files/etc/init.d/frpc $(1)/etc/init.d/frpc
 	$(INSTALL_DIR) $(1)/etc/lst-signbox-lists-tgbot
 	$(INSTALL_DIR) $(1)/var/lib/lst-signbox-lists-tgbot
 endef
