@@ -116,8 +116,8 @@ func TestSectionActionRows(t *testing.T) {
 	yt := sampleSections[2]
 
 	rows := a.sectionActionRows(yt, lists.TypeDomain, secTok)
-	if len(rows) != 1 || len(rows[0]) != 2 {
-		t.Fatalf("expected show+download for a bound list, got %+v", rows)
+	if len(rows) != 2 || len(rows[0]) != 2 || rows[1][0].CallbackData != targetCallback(verbBind, lists.TypeDomain, secTok, "") {
+		t.Fatalf("expected show+download and bind for a bound list, got %+v", rows)
 	}
 
 	rows = a.sectionActionRows(yt, lists.TypeIP, secTok)

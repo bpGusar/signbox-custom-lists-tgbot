@@ -1,6 +1,22 @@
 package lists
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
+
+func TestParseInputDomainsIgnoreCase(t *testing.T) {
+	r := ParseInput("// #cat: Video\nExample.COM, example.com\n// SUB.Example.COM\n.COM\nEXAMPLE.XN--P1AI")
+	want := []string{"example.com", "sub.example.com", ".com", "example.xn--p1ai"}
+	if r.Type != TypeDomain || r.Mixed || len(r.Invalid) > 0 || !reflect.DeepEqual(r.Valid, want) {
+		t.Fatalf("unexpected result: %+v", r)
+	}
+	for _, value := range want {
+		if r.Categories[value] != "Video" {
+			t.Fatalf("category for %q = %q", value, r.Categories[value])
+		}
+	}
+}
 
 func TestParseInputDomains(t *testing.T) {
 	r := ParseInput("test.com, example.org")
@@ -112,9 +128,9 @@ func TestSortGroupByBaseDomain(t *testing.T) {
 
 func TestBaseDomain(t *testing.T) {
 	cases := map[string]string{
-		"kick.com":           "kick.com",
-		"cdn.kick.com":       "kick.com",
-		"api.github.com":     "github.com",
+		"kick.com":            "kick.com",
+		"cdn.kick.com":        "kick.com",
+		"api.github.com":      "github.com",
 		"www.api.example.org": "example.org",
 	}
 	for host, want := range cases {

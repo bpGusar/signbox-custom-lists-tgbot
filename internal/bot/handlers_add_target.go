@@ -39,8 +39,84 @@ func (a *App) askAddTarget(ctx context.Context, b *tgbot.Bot, reply pickReply, o
 		Text: btnCancel, CallbackData: cbPrefix + op.ID + ":cancel",
 	}})
 
-	text := fmt.Sprintf("📥 %s — %s\n\nВ какую секцию добавить?", typeLabel(op.ListType), pluralEntries(len(op.Values)))
-	reply.send(ctx, b, a.withBanner(text), &models.InlineKeyboardMarkup{InlineKeyboard: rows})
+	text := fmt.Sprintf("📥 %s — %s", typeLabel(op.ListType), pluralEntries(len(op.Values)))
+	if op.ListType == lists.TypeDomain {
+		text += "\n\n" + domainPresence(secs, op.Values)
+	}
+	text += "\n\nВ какую секцию добавить?"
+	messages := splitPlainMessages(a.withBanner(text), listMessageMaxLen)
+	for _, msg := range messages[:len(messages)-1] {
+		a.sendPlain(ctx, b, reply.chatID, msg, nil)
+	}
+	reply.send(ctx, b, messages[len(messages)-1], &models.InlineKeyboardMarkup{InlineKeyboard: rows})
+}
+
+func domainPresence(secs []podkop.Section, values []string) string {
+	type listFile struct {
+		path     string
+		sections []string
+	}
+	var files []listFile
+	byPath := make(map[string]int)
+	for _, sec := range secs {
+		for _, path := range sec.DomainLists {
+			i, ok := byPath[path]
+			if !ok {
+				i = len(files)
+				byPath[path] = i
+				files = append(files, listFile{path: path})
+			}
+			if n := len(files[i].sections); n == 0 || files[i].sections[n-1] != sec.Name {
+				files[i].sections = append(files[i].sections, sec.Name)
+			}
+		}
+	}
+
+	var matches, warnings []string
+	for _, file := range files {
+		classified, err := lists.ClassifyValues(file.path, values)
+		if err != nil {
+			warnings = append(warnings, "⚠️ Не удалось прочитать "+file.path)
+			continue
+		}
+		var entries []string
+		for _, entry := range classified {
+			switch entry.Status {
+			case lists.StatusActive:
+				entries = append(entries, "✅ "+entry.Value)
+			case lists.StatusDisabled:
+				entries = append(entries, "⏸ "+entry.Value)
+			}
+		}
+		if len(entries) > 0 {
+			matches = append(matches, "📄 "+file.path+"\n🗂 "+strings.Join(file.sections, ", ")+"\n"+strings.Join(entries, "\n"))
+		}
+	}
+
+	text := "🔎 Уже есть в списках (✅ активен / ⏸ отключён):\n\n" + strings.Join(matches, "\n\n")
+	if len(matches) == 0 {
+		text = "🔎 В подключённых списках доменов совпадений нет."
+		if len(warnings) > 0 {
+			text = "🔎 В прочитанных списках доменов совпадений нет."
+		}
+	}
+	if len(warnings) > 0 {
+		text += "\n\n" + strings.Join(warnings, "\n")
+	}
+	return text
+}
+
+func splitPlainMessages(text string, maxLen int) []string {
+	var messages []string
+	for len(text) > maxLen {
+		part := truncateValidUTF8(text, maxLen)
+		if i := strings.LastIndex(part, "\n"); i > 0 {
+			part = part[:i+1]
+		}
+		messages = append(messages, part)
+		text = text[len(part):]
+	}
+	return append(messages, text)
 }
 
 // addTargetRows lays the sections out for the "куда добавить?" screen. A

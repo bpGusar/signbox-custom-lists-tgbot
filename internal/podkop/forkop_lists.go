@@ -29,18 +29,23 @@ func nameSaysIP(path string) bool {
 // entries goes by its name. It is a variable so tests need no files.
 var listFileType = func(path string) lists.EntryType {
 	if entries, err := lists.ReadFile(path); err == nil {
-		hasIP := false
-		for _, e := range entries {
-			switch lists.ClassifyToken(e.Value) {
-			case lists.TypeDomain:
-				return lists.TypeDomain
-			case lists.TypeIP:
-				hasIP = true
-			}
+		return listTypeFromEntries(path, entries)
+	}
+	return listTypeFromEntries(path, nil)
+}
+
+func listTypeFromEntries(path string, entries []lists.LineEntry) lists.EntryType {
+	hasIP := false
+	for _, e := range entries {
+		switch lists.ClassifyToken(e.Value) {
+		case lists.TypeDomain:
+			return lists.TypeDomain
+		case lists.TypeIP:
+			hasIP = true
 		}
-		if hasIP {
-			return lists.TypeIP
-		}
+	}
+	if hasIP {
+		return lists.TypeIP
 	}
 	if nameSaysIP(path) {
 		return lists.TypeIP

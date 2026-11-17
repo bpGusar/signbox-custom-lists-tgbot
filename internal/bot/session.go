@@ -38,6 +38,7 @@ type PendingOp struct {
 	Kind          ActionKind
 	ListType      lists.EntryType
 	ListPath      string
+	ExistingFile  bool
 	Values        []string
 	DisableValues []string
 	// Section is the podkop section the list belongs to, empty for the file

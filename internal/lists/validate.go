@@ -33,7 +33,7 @@ func ClassifyToken(token string) EntryType {
 }
 
 func IsDomain(s string) bool {
-	s = strings.TrimSpace(s)
+	s = strings.ToLower(strings.TrimSpace(s))
 	if len(s) > 253 {
 		return false
 	}
@@ -147,6 +147,9 @@ func ParseInput(text string) ParseResult {
 		if et == TypeUnknown {
 			result.Invalid = append(result.Invalid, value)
 			continue
+		}
+		if et == TypeDomain {
+			value = strings.ToLower(value)
 		}
 		if firstType == TypeUnknown {
 			firstType = et

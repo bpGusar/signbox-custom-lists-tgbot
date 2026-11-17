@@ -25,6 +25,40 @@ func readRaw(t *testing.T, path string) string {
 	return string(data)
 }
 
+func TestDomainActionsIgnoreCase(t *testing.T) {
+	path := tempList(t, "// #cat: Video\nExample.COM\n// Disabled.ORG\n")
+	classified, err := ClassifyValues(path, []string{"EXAMPLE.com", "DISABLED.org", "sub.example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if classified[0].Status != StatusActive || classified[1].Status != StatusDisabled || classified[2].Status != StatusNew {
+		t.Fatalf("unexpected statuses: %+v", classified)
+	}
+	if err := AddNew(path, []string{"example.com", "disabled.org"}, TypeDomain, Uncategorized); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := ReadFile(path)
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("duplicates added: %+v, err=%v", entries, err)
+	}
+	if err := AddAll(path, []string{"DISABLED.org"}, TypeDomain, Uncategorized); err != nil {
+		t.Fatal(err)
+	}
+	if err := DisableExistingOnly(path, []string{"EXAMPLE.com"}, TypeDomain); err != nil {
+		t.Fatal(err)
+	}
+	classified, err = ClassifyValues(path, []string{"example.com", "disabled.org"})
+	if err != nil || classified[0].Status != StatusDisabled || classified[1].Status != StatusActive {
+		t.Fatalf("unexpected statuses after toggling: %+v, err=%v", classified, err)
+	}
+	if err := Delete(path, []string{"EXAMPLE.COM", "disabled.ORG"}, TypeDomain); err != nil {
+		t.Fatal(err)
+	}
+	if got := readRaw(t, path); got != "// #cat: Video\n" {
+		t.Fatalf("entries not deleted: %q", got)
+	}
+}
+
 // A file written before categories existed must round-trip unchanged in shape:
 // every entry uncategorized, and no directives added to it.
 func TestLegacyFileStaysFlat(t *testing.T) {

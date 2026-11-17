@@ -3,6 +3,7 @@ package bot
 import (
 	"context"
 	"fmt"
+	"os"
 	pathpkg "path"
 	"strings"
 
@@ -25,12 +26,13 @@ const (
 // "_<list type>_<section>", and all but bind by an optional "_<file>", because
 // a section can hold several files and a button must say which one it meant.
 const (
-	verbDownload = "dl"
-	verbView     = "view"
-	verbViewAll  = "all"
-	verbViewCats = "cats"
-	verbViewCat  = "cat"
-	verbBind     = "bind"
+	verbDownload  = "dl"
+	verbView      = "view"
+	verbViewAll   = "all"
+	verbViewCats  = "cats"
+	verbViewCat   = "cat"
+	verbBind      = "bind"
+	verbSavedBind = "savedbind"
 )
 
 // targetAction is a menu callback that points at a list inside a section.
@@ -68,7 +70,7 @@ func parseTargetAction(action string) (targetAction, bool) {
 		act.rest = parts[4]
 	}
 	switch act.verb {
-	case verbDownload, verbView, verbViewAll, verbViewCats, verbViewCat, verbBind:
+	case verbDownload, verbView, verbViewAll, verbViewCats, verbViewCat, verbBind, verbSavedBind:
 		return act, true
 	}
 	return targetAction{}, false
@@ -86,6 +88,9 @@ func (a *App) showSections(ctx context.Context, b *tgbot.Bot, update *models.Upd
 		}})
 	}
 	rows = append(rows, []models.InlineKeyboardButton{{
+		Text: btnSavedFiles, CallbackData: menuCbPrefix + "savedpage_0",
+	}})
+	rows = append(rows, []models.InlineKeyboardButton{{
 		Text: menuBtnMainMenu, CallbackData: menuCbPrefix + "main_menu",
 	}})
 
@@ -96,7 +101,6 @@ func (a *App) showSections(ctx context.Context, b *tgbot.Bot, update *models.Upd
 	a.answerAndEditMarkup(ctx, b, update, text, &models.InlineKeyboardMarkup{InlineKeyboard: rows})
 }
 
-// showSectionCard is the screen where the four actions live.
 func (a *App) showSectionCard(ctx context.Context, b *tgbot.Bot, update *models.Update, secTok string) {
 	s, err := a.findSection(ctx, secTok)
 	if err != nil {
@@ -123,8 +127,6 @@ func (a *App) showSectionCard(ctx context.Context, b *tgbot.Bot, update *models.
 	a.answerAndEditMarkup(ctx, b, update, text, &models.InlineKeyboardMarkup{InlineKeyboard: rows})
 }
 
-// sectionActionRows is either the pair of buttons for a bound list or the
-// offer to bind one.
 func (a *App) sectionActionRows(s podkop.Section, t lists.EntryType, secTok string) [][]models.InlineKeyboardButton {
 	kind := "домены"
 	if t == lists.TypeIP {
@@ -139,6 +141,8 @@ func (a *App) sectionActionRows(s podkop.Section, t lists.EntryType, secTok stri
 	return [][]models.InlineKeyboardButton{{
 		{Text: "📋 Показать " + kind, CallbackData: targetCallback(verbView, t, secTok, "")},
 		{Text: "📥 Скачать " + kind, CallbackData: targetCallback(verbDownload, t, secTok, "")},
+	}, {
+		{Text: "🔗 Привязать ещё файл " + kind, CallbackData: targetCallback(verbBind, t, secTok, "")},
 	}}
 }
 
@@ -168,6 +172,10 @@ func (a *App) handleTargetAction(ctx context.Context, b *tgbot.Bot, update *mode
 
 	if act.verb == verbBind {
 		a.startBind(ctx, b, update, act)
+		return
+	}
+	if act.verb == verbSavedBind {
+		a.startSavedBind(ctx, b, update, act)
 		return
 	}
 
@@ -268,12 +276,17 @@ func (a *App) showBindConfirm(ctx context.Context, b *tgbot.Bot, reply pickReply
 	text := fmt.Sprintf(
 		"🔗 Привязать файл (%s) к секции «%s»:\n\n%s\n\nФайл будет создан, если его ещё нет, а путь добавлен в /etc/config/%s. После этого %s нужно перезапустить.",
 		typeLabel(base.ListType), base.Section, path, name, name)
+	if base.ExistingFile {
+		text = fmt.Sprintf("🔗 Привязать сохранённый файл (%s) к секции «%s»:\n\n%s\n\nСодержимое файла сохранится. Путь будет добавлен в /etc/config/%s. После этого %s нужно перезапустить.",
+			typeLabel(base.ListType), base.Section, path, name, name)
+	}
 	if len(base.Values) > 0 {
 		text += fmt.Sprintf("\n\nПосле привязки вернёмся к вашим записям (%s).", pluralEntries(len(base.Values)))
 	}
 	kb := &models.InlineKeyboardMarkup{
 		InlineKeyboard: [][]models.InlineKeyboardButton{
 			{{Text: btnBindConfirm, CallbackData: cbPrefix + opID + ":confirm"}},
+			{{Text: btnSavedFiles, CallbackData: cbPrefix + opID + ":savedpage_0"}},
 			{{Text: btnCustomPath, CallbackData: cbPrefix + opID + ":custom"}},
 			{{Text: btnCancel, CallbackData: cbPrefix + opID + ":cancel"}},
 		},
@@ -312,17 +325,50 @@ func (a *App) handleBindPathText(ctx context.Context, b *tgbot.Bot, chatID int64
 
 // execBind writes the binding into the backend's config and creates the file.
 func (a *App) execBind(ctx context.Context, b *tgbot.Bot, update *models.Update, op *PendingOp) {
-	if err := podkop.Bind(ctx, op.Section, op.ListType, op.ListPath); err != nil {
+	s, err := a.findSection(ctx, sectionToken(op.Section))
+	if err != nil {
+		a.answerAndEditMarkup(ctx, b, update, targetError(err), a.backToSectionsInlineKeyboard())
+		return
+	}
+	for _, path := range s.Lists(op.ListType) {
+		if path == op.ListPath {
+			if len(op.Values) > 0 {
+				a.showAddActions(ctx, b, a.replyTo(update, op.ChatID), op,
+					listTarget{Section: op.Section, Type: op.ListType, Path: op.ListPath},
+					"ℹ️ Этот файл уже привязан к секции.\n\n")
+				return
+			}
+			a.sess.Delete(op.ID)
+			a.answerAndEditMarkup(ctx, b, update, "ℹ️ Этот файл уже привязан к секции «"+op.Section+"».",
+				a.backToSectionInlineKeyboard(sectionToken(op.Section)))
+			return
+		}
+	}
+	if op.ExistingFile {
+		info, err := os.Stat(op.ListPath)
+		if err != nil || !info.Mode().IsRegular() {
+			a.answerAndEditMarkup(ctx, b, update, "❌ Сохранённый файл больше недоступен. Откройте список файлов заново.",
+				a.backToSectionInlineKeyboard(sectionToken(op.Section)))
+			return
+		}
+	}
+	bind := a.bindList
+	if bind == nil {
+		bind = podkop.Bind
+	}
+	if err := bind(ctx, op.Section, op.ListType, op.ListPath); err != nil {
 		a.logf(op.ChatID, "bind_error section=%q type=%s path=%q err=%v", op.Section, typeLabel(op.ListType), op.ListPath, err)
 		a.answerAndEditMarkup(ctx, b, update, "❌ Не удалось привязать файл: "+err.Error(), a.backToSectionsInlineKeyboard())
 		return
 	}
-	if err := lists.CreateFiles(op.ListPath); err != nil {
-		a.logf(op.ChatID, "bind_create_file_error path=%q err=%v", op.ListPath, err)
-		a.answerAndEditMarkup(ctx, b, update,
-			"⚠️ Путь добавлен в "+a.backendName()+", но файл создать не удалось: "+err.Error(),
-			a.backToSectionsInlineKeyboard())
-		return
+	if !op.ExistingFile {
+		if err := lists.CreateFiles(op.ListPath); err != nil {
+			a.logf(op.ChatID, "bind_create_file_error path=%q err=%v", op.ListPath, err)
+			a.answerAndEditMarkup(ctx, b, update,
+				"⚠️ Путь добавлен в "+a.backendName()+", но файл создать не удалось: "+err.Error(),
+				a.backToSectionsInlineKeyboard())
+			return
+		}
 	}
 	a.logf(op.ChatID, "bind_success section=%q type=%s path=%q values=%d",
 		op.Section, typeLabel(op.ListType), op.ListPath, len(op.Values))

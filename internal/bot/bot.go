@@ -30,7 +30,9 @@ type App struct {
 	// can be exercised without a router to run uci on; nil means the real thing.
 	readSections func(context.Context) ([]podkop.Section, error)
 	// detectBackend is the same for finding which backend is installed.
-	detectBackend func() (podkop.Backend, error)
+	detectBackend  func() (podkop.Backend, error)
+	readSavedFiles func() ([]podkop.SavedListFile, error)
+	bindList       func(context.Context, string, lists.EntryType, string) error
 }
 
 func (a *App) isReady(chatID int64) bool {
@@ -166,8 +168,9 @@ func (a *App) notifyNewVersion(ctx context.Context, b *tgbot.Bot) {
 	}
 
 	params := &tgbot.SendMessageParams{
-		ChatID: chatID,
-		Text:   fmt.Sprintf("🆕 Доступна новая версия: %s\nТекущая: %s", latest, version.Display()),
+		ChatID:              chatID,
+		Text:                fmt.Sprintf("🆕 Доступна новая версия: %s\nТекущая: %s", latest, version.Display()),
+		DisableNotification: true,
 	}
 	if service.UpgradeSupported() {
 		// Same callback as the settings entry, so pressing it runs the very

@@ -278,6 +278,9 @@ func (a *App) handleMenuCallback(ctx context.Context, b *tgbot.Bot, update *mode
 		CallbackQueryID: update.CallbackQuery.ID,
 	})
 
+	if a.handleSavedFilesAction(ctx, b, update, nil, action) {
+		return
+	}
 	// A button that points at a list carries the whole target — list type,
 	// section and file — so it keeps working no matter what was opened since.
 	if act, ok := parseTargetAction(action); ok {
@@ -594,11 +597,17 @@ func (a *App) handleCallback(ctx context.Context, b *tgbot.Bot, update *models.U
 	case ActionCategory:
 		a.handleCategoryAction(ctx, b, update, op, action)
 	case ActionBind:
+		if a.handleSavedFilesAction(ctx, b, update, op, action) {
+			return
+		}
 		switch action {
 		case "confirm":
 			a.execBind(ctx, b, update, op)
 		case "custom":
 			a.promptBindPath(ctx, b, update, op)
+		case "bindback":
+			a.sess.Delete(op.ID)
+			a.showBindConfirm(ctx, b, a.replyTo(update, chatID), *op, op.ListPath)
 		}
 	case ActionAddAll:
 		if action == "confirm" {
